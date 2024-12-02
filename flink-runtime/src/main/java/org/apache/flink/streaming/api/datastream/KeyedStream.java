@@ -589,7 +589,9 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
                             right.getType()
                                     .createSerializer(
                                             right.getExecutionConfig().getSerializerConfig()),
-                            cleanedUdf);
+                            cleanedUdf,
+                            0L,
+                            0L);
 
             return left.connect(right)
                     .keyBy(keySelector1, keySelector2)

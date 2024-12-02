@@ -18,6 +18,7 @@
 
 package org.apache.flink.streaming.api.operators.co;
 
+import org.junit.jupiter.api.Test;
 import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.typeinfo.TypeHint;
@@ -385,10 +386,9 @@ class IntervalJoinOperatorTest {
     }
 
     @TestTemplate
-    void testContextCorrectLeftTimestamp() throws Exception {
-
+    void testReturnsCorrectLeftTimestamp() throws Exception {
         IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>> op =
-                new IntervalJoinOperator<>(
+                new IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>>(
                         -1,
                         1,
                         true,
@@ -407,7 +407,9 @@ class IntervalJoinOperatorTest {
                                     throws Exception {
                                 assertThat(ctx.getLeftTimestamp()).isEqualTo(left.ts);
                             }
-                        });
+                        },
+                        0L,  // No early firing
+                        0L); // No lateness
 
         try (TestHarness testHarness =
                 new TestHarness(
@@ -426,7 +428,7 @@ class IntervalJoinOperatorTest {
     @TestTemplate
     void testReturnsCorrectTimestamp() throws Exception {
         IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>> op =
-                new IntervalJoinOperator<>(
+                new IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>>(
                         -1,
                         1,
                         true,
@@ -436,7 +438,6 @@ class IntervalJoinOperatorTest {
                         TestElem.serializer(),
                         TestElem.serializer(),
                         new ProcessJoinFunction<TestElem, TestElem, Tuple2<TestElem, TestElem>>() {
-
                             private static final long serialVersionUID = 1L;
 
                             @Override
@@ -449,7 +450,9 @@ class IntervalJoinOperatorTest {
                                 assertThat(ctx.getTimestamp())
                                         .isEqualTo(Math.max(left.ts, right.ts));
                             }
-                        });
+                        },
+                        0L,  // No early firing
+                        0L); // No lateness
 
         try (TestHarness testHarness =
                 new TestHarness(
@@ -466,10 +469,9 @@ class IntervalJoinOperatorTest {
     }
 
     @TestTemplate
-    void testContextCorrectRightTimestamp() throws Exception {
-
+    void testReturnsCorrectRightTimestamp() throws Exception {
         IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>> op =
-                new IntervalJoinOperator<>(
+                new IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>>(
                         -1,
                         1,
                         true,
@@ -488,7 +490,9 @@ class IntervalJoinOperatorTest {
                                     throws Exception {
                                 assertThat(ctx.getRightTimestamp()).isEqualTo(right.ts);
                             }
-                        });
+                        },
+                        0L,  // No early firing
+                        0L); // No lateness
 
         try (TestHarness testHarness =
                 new TestHarness(
@@ -598,6 +602,68 @@ class IntervalJoinOperatorTest {
                 .close();
     }
 
+    @TestTemplate
+    void testEarlyFiring() throws Exception {
+        // Test basic early firing with 2ms interval and 1ms lateness
+        setupHarness(-1, true, 1, true, null, null, 2, 1)
+                .processElementsAndWatermarks(1, 4)
+                .andExpect(
+                        // Early results at watermark 2
+                        streamRecordOf(1, 1),
+                        streamRecordOf(1, 2),
+                        streamRecordOf(2, 1),
+                        streamRecordOf(2, 2),
+                        // Early results at watermark 3
+                        streamRecordOf(2, 3),
+                        streamRecordOf(3, 2),
+                        streamRecordOf(3, 3),
+                        // Final results at watermark 4
+                        streamRecordOf(3, 4),
+                        streamRecordOf(4, 3),
+                        streamRecordOf(4, 4))
+                .noLateRecords()
+                .close();
+    }
+
+    @TestTemplate
+    void testEarlyFiringWithLateElements() throws Exception {
+        OutputTag<TestElem> leftLateTag = new OutputTag<>("left-late");
+        OutputTag<TestElem> rightLateTag = new OutputTag<>("right-late");
+        
+        // Test early firing with late elements
+        setupHarness(-1, true, 1, true, leftLateTag, rightLateTag, 2, 3)
+                .processElement1(1)
+                .processElement2(1)
+                .processWatermark1(4)  // Advance watermark beyond lateness
+                .processWatermark2(4)
+                .processElement1(2)  // Late element
+                .processElement2(2)  // Late element
+                .andExpect(streamRecordOf(1, 1))  // Only early result before lateness
+                .expectLateElements(leftLateTag, rightLateTag, 2)  // Expect late elements in side output
+                .close();
+    }
+
+    @TestTemplate
+    void testEarlyFiringDisabled() throws Exception {
+        // Test with early firing disabled (interval = 0)
+        setupHarness(-1, true, 1, true, null, null, 0, 0)
+                .processElementsAndWatermarks(1, 4)
+                .andExpect(
+                        // All results emitted only at final watermark
+                        streamRecordOf(1, 1),
+                        streamRecordOf(1, 2),
+                        streamRecordOf(2, 1),
+                        streamRecordOf(2, 2),
+                        streamRecordOf(2, 3),
+                        streamRecordOf(3, 2),
+                        streamRecordOf(3, 3),
+                        streamRecordOf(3, 4),
+                        streamRecordOf(4, 3),
+                        streamRecordOf(4, 4))
+                .noLateRecords()
+                .close();
+    }
+
     private void assertEmpty(MapState<Long, ?> state) throws Exception {
         assertThat(state.keys()).isEmpty();
     }
@@ -648,22 +714,34 @@ class IntervalJoinOperatorTest {
             throws Exception {
 
         IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>> operator =
-                new IntervalJoinOperator<>(
+                new IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>>(
                         lowerBound,
                         upperBound,
                         lowerBoundInclusive,
                         upperBoundInclusive,
-                        null,
-                        null,
+                        null,  // leftLateDataOutputTag
+                        null,  // rightLateDataOutputTag
                         TestElem.serializer(),
                         TestElem.serializer(),
-                        new PassthroughFunction());
+                        new PassthroughFunction(),
+                        0L,   // earlyFireInterval
+                        0L);  // allowedLateness
 
         return new TestHarness(
                 operator,
-                (elem) -> elem.key, // key
-                (elem) -> elem.key, // key
+                (elem) -> elem.key,
+                (elem) -> elem.key,
                 TypeInformation.of(String.class));
+    }
+
+    private JoinTestBuilder setupHarness(
+            long lowerBound,
+            boolean lowerBoundInclusive,
+            long upperBound,
+            boolean upperBoundInclusive)
+            throws Exception {
+        return setupHarness(lowerBound, lowerBoundInclusive, upperBound, upperBoundInclusive,
+                null, null, 0L, 0L);  // Default to no early firing
     }
 
     private JoinTestBuilder setupHarness(
@@ -673,6 +751,20 @@ class IntervalJoinOperatorTest {
             boolean upperBoundInclusive,
             OutputTag<TestElem> leftLateDataOutputTag,
             OutputTag<TestElem> rightLateDataOutputTag)
+            throws Exception {
+        return setupHarness(lowerBound, lowerBoundInclusive, upperBound, upperBoundInclusive,
+                leftLateDataOutputTag, rightLateDataOutputTag, 0L, 0L);  // Default to no early firing
+    }
+
+    private JoinTestBuilder setupHarness(
+            long lowerBound,
+            boolean lowerBoundInclusive,
+            long upperBound,
+            boolean upperBoundInclusive,
+            OutputTag<TestElem> leftLateDataOutputTag,
+            OutputTag<TestElem> rightLateDataOutputTag,
+            long earlyFireInterval,
+            long allowedLateness)
             throws Exception {
 
         IntervalJoinOperator<String, TestElem, TestElem, Tuple2<TestElem, TestElem>> operator =
@@ -685,7 +777,9 @@ class IntervalJoinOperatorTest {
                         rightLateDataOutputTag,
                         TestElem.serializer(),
                         TestElem.serializer(),
-                        new PassthroughFunction());
+                        new PassthroughFunction(),
+                        earlyFireInterval,
+                        allowedLateness);
 
         TestHarness t =
                 new TestHarness(
@@ -695,17 +789,6 @@ class IntervalJoinOperatorTest {
                         TypeInformation.of(String.class));
 
         return new JoinTestBuilder(t, operator);
-    }
-
-    private JoinTestBuilder setupHarness(
-            long lowerBound,
-            boolean lowerBoundInclusive,
-            long upperBound,
-            boolean upperBoundInclusive)
-            throws Exception {
-
-        return setupHarness(
-                lowerBound, lowerBoundInclusive, upperBound, upperBoundInclusive, null, null);
     }
 
     private class JoinTestBuilder {
@@ -838,6 +921,18 @@ class IntervalJoinOperatorTest {
 
         public void close() throws Exception {
             testHarness.close();
+        }
+
+        public JoinTestBuilder expectLateElements(
+                OutputTag<TestElem> leftLateTag,
+                OutputTag<TestElem> rightLateTag,
+                int timestamp) throws Exception {
+            // Verify late elements were output to side channels
+            assertThat(testHarness.getSideOutput(leftLateTag))
+                .contains(new StreamRecord<>(new TestElem(timestamp, "lhs")));
+            assertThat(testHarness.getSideOutput(rightLateTag))
+                .contains(new StreamRecord<>(new TestElem(timestamp, "rhs")));
+            return this;
         }
     }
 

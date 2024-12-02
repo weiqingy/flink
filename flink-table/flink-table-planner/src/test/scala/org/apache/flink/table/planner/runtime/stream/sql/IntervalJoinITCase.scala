@@ -1148,6 +1148,183 @@ class IntervalJoinITCase(mode: StateBackendMode) extends StreamingWithStateTestB
     )
     assertThat(sink.getAppendResults.sorted).isEqualTo(expected.toList.sorted)
   }
+
+  /** test proctime inner join with early firing, null keys and multiple conditions * */
+  @TestTemplate
+  def testProcessTimeInnerJoinWithEarlyFiringAndNullKeys(): Unit = {
+    env.setParallelism(1)
+
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE(1 SECOND) */
+        |  t2.a, t2.c, t1.c
+        |FROM T1 as t1 join T2 as t2 ON
+        |  t1.a is not distinct from t2.a AND
+        |  t1.b = t2.b AND
+        |  t1.proctime BETWEEN t2.proctime - INTERVAL '5' SECOND AND
+        |    t2.proctime + INTERVAL '5' SECOND
+        |""".stripMargin
+
+    val data1 = new mutable.MutableList[(String, Long, String)]
+    // Regular data
+    data1.+=(("1", 1L, "Hi1"))  // t=1000
+    data1.+=(("1", 2L, "Hi2"))  // t=2000
+    data1.+=(("1", 5L, "Hi3"))  // t=5000
+    // Null key data
+    data1.+=((null, 7L, "Hi4"))  // t=7000
+    data1.+=((null, 8L, "Hi5"))  // t=8000
+
+    val data2 = new mutable.MutableList[(String, Long, String)]
+    // Regular data
+    data2.+=(("1", 2L, "Hello1"))  // t=2000
+    data2.+=(("1", 5L, "Hello2"))  // t=5000
+    // Null key data
+    data2.+=((null, 7L, "Hello3"))  // t=7000
+
+    val t1 = StreamingEnvUtil
+      .fromCollection(env, data1)
+      .toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
+    val t2 = StreamingEnvUtil
+      .fromCollection(env, data2)
+      .toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
+
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporaryView("T2", t2)
+
+    val sink = new TestingAppendSink
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
+    result.addSink(sink)
+    env.execute()
+
+    // We expect early results before the final results
+    // Early results should appear approximately 1 second after each input
+    // Results should include matches with null keys when using 'is not distinct from'
+    val expected = mutable.MutableList(
+      // Regular key matches with early firing
+      "1,Hello1,Hi2",    // Early result after 1 sec (matching b=2)
+      "1,Hello2,Hi3",    // Early result after 1 sec (matching b=5)
+      // Null key matches with early firing
+      "null,Hello3,Hi4"  // Early result after 1 sec (matching b=7 with null keys)
+    )
+    
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
+  }
+
+  /** test proctime inner join with early firing * */
+  @TestTemplate
+  def testProcessTimeInnerJoinWithEarlyFiring(): Unit = {
+    env.setParallelism(1)
+
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE(1 SECOND) */
+        |  t2.a, t2.c, t1.c
+        |FROM T1 as t1 join T2 as t2 ON
+        |  t1.a = t2.a AND
+        |  t1.proctime BETWEEN t2.proctime - INTERVAL '5' SECOND AND
+        |    t2.proctime + INTERVAL '5' SECOND
+        |""".stripMargin
+
+    val data1 = new mutable.MutableList[(Int, Long, String)]
+    // Add data with specific timing to test early firing
+    data1.+=((1, 1L, "Hi1"))  // t=1000
+    data1.+=((1, 3L, "Hi2"))  // t=3000
+    data1.+=((1, 4L, "Hi3"))  // t=4000
+    data1.+=((1, 8L, "Hi4"))  // t=8000
+
+    val data2 = new mutable.MutableList[(Int, Long, String)]
+    data2.+=((1, 2L, "Hello1"))  // t=2000
+    data2.+=((1, 7L, "Hello2"))  // t=7000
+
+    val t1 = StreamingEnvUtil
+      .fromCollection(env, data1)
+      .toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
+    val t2 = StreamingEnvUtil
+      .fromCollection(env, data2)
+      .toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
+
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporaryView("T2", t2)
+
+    val sink = new TestingAppendSink
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
+    result.addSink(sink)
+    env.execute()
+
+    // We expect early results before the final results
+    // Early results should appear approximately 1 second after each input
+    // Final results should appear after the full window
+    val expected = mutable.MutableList(
+      // Early results for first join
+      "1,Hello1,Hi1",  // Early result after 1 sec
+      "1,Hello1,Hi2",  // Early result after 1 sec
+      "1,Hello1,Hi3",  // Early result after 1 sec
+      // Early results for second join
+      "1,Hello2,Hi3",  // Early result after 1 sec
+      "1,Hello2,Hi4"   // Early result after 1 sec
+    )
+    
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
+  }
+
+  /** test rowtime inner join with early firing * */
+  @TestTemplate
+  def testRowTimeInnerJoinWithEarlyFiring(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE(2 SECOND) */
+        |  t2.key, t2.id, t1.id
+        |FROM T1 as t1 join T2 as t2 ON
+        |  t1.key = t2.key AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '5' SECOND AND
+        |    t2.rowtime + INTERVAL '6' SECOND
+        |""".stripMargin
+
+    val data1 = new mutable.MutableList[(String, String, Long)]
+    // Add data with specific timing to test early firing
+    data1.+=(("A", "L1", 1000L))  // t=1000
+    data1.+=(("A", "L2", 3000L))  // t=3000
+    data1.+=(("A", "L3", 5000L))  // t=5000
+    data1.+=(("A", "L4", 6000L))  // t=6000
+    data1.+=(("A", "L5", 8000L))  // t=8000
+
+    val data2 = new mutable.MutableList[(String, String, Long)]
+    data2.+=(("A", "R1", 2000L))  // t=2000
+    data2.+=(("A", "R2", 7000L))  // t=7000
+
+    val t1 = StreamingEnvUtil
+      .fromCollection(env, data1)
+      .assignTimestampsAndWatermarks(new Row3WatermarkExtractor2)
+      .toTable(tEnv, 'key, 'id, 'rowtime.rowtime)
+    val t2 = StreamingEnvUtil
+      .fromCollection(env, data2)
+      .assignTimestampsAndWatermarks(new Row3WatermarkExtractor2)
+      .toTable(tEnv, 'key, 'id, 'rowtime.rowtime)
+
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporaryView("T2", t2)
+
+    val sink = new TestingAppendSink
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
+    result.addSink(sink)
+    env.execute()
+
+    // We expect early results before the final results
+    // Early results should appear approximately 2 seconds after each input
+    // Final results should appear after the full window
+    val expected = mutable.MutableList(
+      // Early results for first join (R1)
+      "A,R1,L1",  // Early result after 2 sec
+      "A,R1,L2",  // Early result after 2 sec
+      "A,R1,L3",  // Early result after 2 sec
+      // Early results for second join (R2)
+      "A,R2,L3",  // Early result after 2 sec
+      "A,R2,L4",  // Early result after 2 sec
+      "A,R2,L5"   // Early result after 2 sec
+    )
+    
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
+  }
 }
 
 private class Row4WatermarkExtractor

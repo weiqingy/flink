@@ -255,6 +255,52 @@ SELECT /*+ SHUFFLE_MERGE(t1, t3) */ * FROM t1 JOIN t2 ON t1.id = t2.id JOIN t3 O
 SELECT /*+ SHUFFLE_MERGE(t1) */ * FROM t1 join t2 ON t1.id > t2.id;
 ```
 
+#### EARLY_FIRE
+
+{{< label Streaming >}}
+
+`EARLY_FIRE` enables early result emission for interval joins before the join window completes. This is useful for scenarios where you want to see partial join results as soon as possible, without waiting for the entire join window to complete.
+
+The hint accepts two optional parameters:
+- `fire-interval`: The interval at which to fire early results (default: 1 minute)
+- `max-lateness`: The maximum lateness allowed for elements (default: 10 minutes)
+
+{{< hint info >}}
+Note: EARLY_FIRE only works with interval joins and requires a time attribute in the join condition.
+{{< /hint >}}
+
+##### Examples
+
+```sql
+CREATE TABLE orders (
+    order_id BIGINT,
+    price DECIMAL(10, 2),
+    currency STRING,
+    order_time TIMESTAMP(3),
+    WATERMARK FOR order_time AS order_time - INTERVAL '2' SECONDS
+) WITH (...);
+
+CREATE TABLE payments (
+    payment_id BIGINT,
+    order_id BIGINT,
+    amount DECIMAL(10, 2),
+    payment_time TIMESTAMP(3),
+    WATERMARK FOR payment_time AS payment_time - INTERVAL '2' SECONDS
+) WITH (...);
+
+-- Enable early firing with default intervals (fire every 1 minute, max lateness 10 minutes)
+SELECT /*+ EARLY_FIRE */ *
+FROM orders o JOIN payments p
+ON o.order_id = p.order_id AND
+   o.order_time BETWEEN p.payment_time - INTERVAL '1' HOUR AND p.payment_time;
+
+-- Enable early firing with custom intervals
+SELECT /*+ EARLY_FIRE('fire-interval'='10s', 'max-lateness'='1h') */ *
+FROM orders o JOIN payments p
+ON o.order_id = p.order_id AND
+   o.order_time BETWEEN p.payment_time - INTERVAL '1' HOUR AND p.payment_time;
+```
+
 #### NEST_LOOP
 
 {{< label Batch >}}

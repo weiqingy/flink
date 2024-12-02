@@ -506,6 +506,57 @@ class IntervalJoinTest extends TableTestBase {
     util.verifyExecPlan(sql)
   }
 
+  @Test
+  def testEarlyFireHint(): Unit = {
+    util.addDataStream[(Int, Long, Int)]("MyTable5", 'a, 'b, 'c, 'proctime.proctime)
+    util.addDataStream[(Int, Long, Int)]("MyTable6", 'a, 'b, 'c, 'proctime.proctime)
+    
+    // Test default early fire hint
+    val query1 =
+      """
+        |SELECT /*+ EARLY_FIRE */ t1.a, t2.c FROM MyTable5 AS t1 JOIN MyTable6 AS t2 ON
+        |    t1.a = t2.a AND
+        |    t1.proctime BETWEEN t2.proctime - INTERVAL '10' SECOND AND t2.proctime
+      """.stripMargin
+    util.verifyExecPlan(query1)
+
+    // Test early fire hint with custom parameters
+    val query2 =
+      """
+        |SELECT /*+ EARLY_FIRE('fire-interval'='5s', 'max-lateness'='1m') */ t1.a, t2.c 
+        |FROM MyTable5 AS t1 JOIN MyTable6 AS t2 ON
+        |    t1.a = t2.a AND
+        |    t1.proctime BETWEEN t2.proctime - INTERVAL '10' SECOND AND t2.proctime
+      """.stripMargin
+    util.verifyExecPlan(query2)
+  }
+
+  @Test
+  def testEarlyFireHintWithRowtime(): Unit = {
+    util.addDataStream[(Int, Long, Int)]("MyTable5", 'a, 'b, 'c, 'rowtime.rowtime)
+    util.addDataStream[(Int, Long, Int)]("MyTable6", 'a, 'b, 'c, 'rowtime.rowtime)
+    
+    val query =
+      """
+        |SELECT /*+ EARLY_FIRE('fire-interval'='5s') */ t1.a, t2.c FROM MyTable5 AS t1 JOIN MyTable6 AS t2 ON
+        |    t1.a = t2.a AND
+        |    t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime
+      """.stripMargin
+    util.verifyExecPlan(query)
+  }
+
+  @Test
+  def testRowTimeInnerJoinWithEarlyFire(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE(1 SECOND) */ t1.a, t2.b FROM MyTable t1 JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    util.verifyExecPlan(sqlQuery)
+  }
+
   private def verifyTimeBoundary(
       timeConditionSql: String,
       expLeftSize: Long,

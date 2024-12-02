@@ -75,6 +75,11 @@ import java.util.Objects;
  * element. This timer indicates when an element is not considered for joining anymore and can be
  * removed from the state.
  *
+ * <p>Early firing can be enabled to emit partial join results before the window completes. When enabled,
+ * the operator will periodically check for joinable pairs and emit them, without removing them from state.
+ * This allows the same elements to participate in future joins. Early results are triggered by timers
+ * at regular intervals specified by earlyFireInterval.
+ *
  * @param <K> The type of the key based on which we join elements.
  * @param <T1> The type of the elements in the left stream.
  * @param <T2> The type of the elements in the right stream.
@@ -94,13 +99,24 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
     private static final String CLEANUP_TIMER_NAME = "CLEANUP_TIMER";
     private static final String CLEANUP_NAMESPACE_LEFT = "CLEANUP_LEFT";
     private static final String CLEANUP_NAMESPACE_RIGHT = "CLEANUP_RIGHT";
+    private static final String EARLY_FIRE_NAMESPACE = "EARLY_FIRE";
 
+    /** The lower bound for the join interval. */
     private final long lowerBound;
+    /** The upper bound for the join interval. */
     private final long upperBound;
+    /** Output tag to emit late data from the left stream. */
     private final OutputTag<T1> leftLateDataOutputTag;
+    /** Output tag to emit late data from the right stream. */
     private final OutputTag<T2> rightLateDataOutputTag;
+    /** Serializer for elements from the left stream. */
     private final TypeSerializer<T1> leftTypeSerializer;
+    /** Serializer for elements from the right stream. */
     private final TypeSerializer<T2> rightTypeSerializer;
+    /** Interval at which to fire early results, or 0 if early firing is disabled. */
+    private final long earlyFireInterval;
+    /** Maximum time to wait for late elements before dropping them. */
+    private final long allowedLateness;
 
     private transient MapState<Long, List<BufferEntry<T1>>> leftBuffer;
     private transient MapState<Long, List<BufferEntry<T2>>> rightBuffer;
@@ -131,7 +147,9 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
             OutputTag<T2> rightLateDataOutputTag,
             TypeSerializer<T1> leftTypeSerializer,
             TypeSerializer<T2> rightTypeSerializer,
-            ProcessJoinFunction<T1, T2, OUT> udf) {
+            ProcessJoinFunction<T1, T2, OUT> udf,
+            long earlyFireInterval,
+            long allowedLateness) {
 
         super(Preconditions.checkNotNull(udf));
 
@@ -147,6 +165,8 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
         this.rightLateDataOutputTag = rightLateDataOutputTag;
         this.leftTypeSerializer = Preconditions.checkNotNull(leftTypeSerializer);
         this.rightTypeSerializer = Preconditions.checkNotNull(rightTypeSerializer);
+        this.earlyFireInterval = earlyFireInterval;
+        this.allowedLateness = allowedLateness;
     }
 
     @Override
@@ -260,6 +280,13 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
         } else {
             internalTimerService.registerEventTimeTimer(CLEANUP_NAMESPACE_RIGHT, cleanupTime);
         }
+
+        // Register early fire timer if early firing is enabled
+        if (earlyFireInterval > 0) {
+            long currentWatermark = internalTimerService.currentWatermark();
+            long nextEarlyFireTime = currentWatermark + earlyFireInterval;
+            internalTimerService.registerEventTimeTimer(EARLY_FIRE_NAMESPACE, nextEarlyFireTime);
+        }
     }
 
     private boolean isLate(long timestamp) {
@@ -305,7 +332,6 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
 
     @Override
     public void onEventTime(InternalTimer<K, String> timer) throws Exception {
-
         long timerTimestamp = timer.getTimestamp();
         String namespace = timer.getNamespace();
 
@@ -328,8 +354,55 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
                     rightBuffer.remove(timestamp);
                     break;
                 }
+            case EARLY_FIRE_NAMESPACE:
+                {
+                    // Early fire logic - emit results for buffered elements
+                    processEarlyFire(timerTimestamp);
+                    
+                    // Register next early fire timer if we still have elements to process
+                    if (!leftBuffer.isEmpty() || !rightBuffer.isEmpty()) {
+                        internalTimerService.registerEventTimeTimer(
+                            EARLY_FIRE_NAMESPACE, timerTimestamp + earlyFireInterval);
+                    }
+                    break;
+                }
             default:
                 throw new RuntimeException("Invalid namespace " + namespace);
+        }
+    }
+
+    private void processEarlyFire(long timestamp) throws Exception {
+        // Process left buffer elements
+        for (Map.Entry<Long, List<BufferEntry<T1>>> leftEntry : leftBuffer.entries()) {
+            long leftTimestamp = leftEntry.getKey();
+            
+            // Skip if element is too new for early firing
+            if (leftTimestamp > timestamp - allowedLateness) {
+                continue;
+            }
+
+            // Find matching right elements
+            for (Map.Entry<Long, List<BufferEntry<T2>>> rightEntry : rightBuffer.entries()) {
+                long rightTimestamp = rightEntry.getKey();
+                
+                // Check if timestamps are within join bounds
+                if (rightTimestamp < leftTimestamp + lowerBound || 
+                    rightTimestamp > leftTimestamp + upperBound) {
+                    continue;
+                }
+
+                // Join and emit if not already emitted
+                for (BufferEntry<T1> leftElem : leftEntry.getValue()) {
+                    if (!leftElem.hasBeenJoined()) {
+                        for (BufferEntry<T2> rightElem : rightEntry.getValue()) {
+                            if (!rightElem.hasBeenJoined()) {
+                                collect(leftElem.getElement(), rightElem.getElement(), 
+                                       leftTimestamp, rightTimestamp);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -395,7 +468,7 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
     public static class BufferEntry<T> {
 
         private final T element;
-        private final boolean hasBeenJoined;
+        private boolean hasBeenJoined;
 
         public BufferEntry(T element, boolean hasBeenJoined) {
             this.element = element;
@@ -410,6 +483,10 @@ public class IntervalJoinOperator<K, T1, T2, OUT>
         @VisibleForTesting
         public boolean hasBeenJoined() {
             return hasBeenJoined;
+        }
+
+        public void markJoined() {
+            this.hasBeenJoined = true;
         }
     }
 

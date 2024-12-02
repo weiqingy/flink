@@ -35,6 +35,7 @@ import org.apache.calcite.util.Litmus;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -65,7 +66,6 @@ import java.util.Optional;
  * </ol>
  */
 public abstract class FlinkHintStrategies {
-
     /**
      * Customize the {@link HintStrategyTable} which contains hint strategies supported by Flink.
      */
@@ -127,6 +127,11 @@ public abstract class FlinkHintStrategies {
                                         HintPredicates.or(
                                                 HintPredicates.JOIN, HintPredicates.AGGREGATE))
                                 .optionChecker(STATE_TTL_NON_EMPTY_KV_OPTION_CHECKER)
+                                .build())
+                .hintStrategy(
+                        JoinStrategy.EARLY_FIRE.getJoinHintName(),
+                        HintStrategy.builder(HintPredicates.JOIN)
+                                .optionChecker(EARLY_FIRE_OPTION_CHECKER)
                                 .build())
                 .build();
     }
@@ -268,6 +273,30 @@ public abstract class FlinkHintStrategies {
                                                 "Invalid STATE_TTL hint value: {}", e.getMessage());
                                     }
                                 });
+                return true;
+            };
+
+    private static void validateDuration(String durationStr) {
+        try {
+            TimeUtils.parseDuration(durationStr);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    String.format(
+                            "Invalid duration value '%s'. Expected format: '10ms', '1s', etc.",
+                            durationStr));
+        }
+    }
+
+    private static final HintOptionChecker EARLY_FIRE_OPTION_CHECKER =
+            (hint, errorHandler) -> {
+                Map<String, String> kvOptions = hint.kvOptions;
+                // Validate fire-interval and max-lateness options
+                if (kvOptions.containsKey(EarlyFireHintOptions.FIRE_INTERVAL)) {
+                    validateDuration(kvOptions.get(EarlyFireHintOptions.FIRE_INTERVAL));
+                }
+                if (kvOptions.containsKey(EarlyFireHintOptions.MAX_LATENESS)) {
+                    validateDuration(kvOptions.get(EarlyFireHintOptions.MAX_LATENESS));
+                }
                 return true;
             };
 }
