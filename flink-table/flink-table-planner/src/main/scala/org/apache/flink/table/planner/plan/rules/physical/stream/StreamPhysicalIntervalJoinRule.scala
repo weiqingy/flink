@@ -19,17 +19,17 @@ package org.apache.flink.table.planner.plan.rules.physical.stream
 
 import org.apache.flink.table.api.{TableException, ValidationException}
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory.isRowtimeIndicatorType
+import org.apache.flink.table.planner.hint.JoinStrategy
 import org.apache.flink.table.planner.plan.nodes.FlinkRelNode
 import org.apache.flink.table.planner.plan.nodes.logical.FlinkLogicalJoin
 import org.apache.flink.table.planner.plan.nodes.physical.stream.StreamPhysicalIntervalJoin
 import org.apache.flink.table.planner.plan.utils.IntervalJoinUtil.satisfyIntervalJoin
-
 import org.apache.calcite.plan.{RelOptRule, RelOptRuleCall, RelTraitSet}
 import org.apache.calcite.rel.RelNode
 
 import java.util
-
 import scala.collection.JavaConversions._
+import scala.collection.JavaConverters.mapAsScalaMapConverter
 
 /**
  * Rule that converts non-SEMI/ANTI [[FlinkLogicalJoin]] with window bounds in join condition to
@@ -105,6 +105,17 @@ class StreamPhysicalIntervalJoinRule
       rightConversion: RelNode => RelNode,
       providedTraitSet: RelTraitSet): FlinkRelNode = {
     val (windowBounds, remainCondition) = extractWindowBounds(join)
+    // Extract the early fire hint values
+    val joinHints = join.getHints
+    val earlyFireHint = joinHints.find(hint => JoinStrategy.isEarlyFireHint(hint.hintName))
+    val (earlyFireDelay, earlyFireFrequency) = earlyFireHint.map { hint =>
+      val hintOptions = hint.kvOptions.asScala.map { case (k, v) => k.toLowerCase -> v }
+      val delay = hintOptions.getOrElse("delay", "0").toLong
+      val frequency = hintOptions.getOrElse("frequency", "0").toLong
+      (delay, frequency)
+    }.getOrElse((0L, 0L)) // Default values if hint not present
+
+    // create the StreamPhysicalIntervalJoin
     new StreamPhysicalIntervalJoin(
       join.getCluster,
       providedTraitSet,
@@ -113,7 +124,10 @@ class StreamPhysicalIntervalJoinRule
       join.getJoinType,
       join.getCondition,
       remainCondition.getOrElse(join.getCluster.getRexBuilder.makeLiteral(true)),
-      windowBounds.get)
+      windowBounds.get,
+      earlyFireDelay,
+      earlyFireFrequency
+    )
   }
 }
 

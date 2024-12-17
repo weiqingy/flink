@@ -66,6 +66,9 @@ class IntervalJoinTest extends TableTestBase {
 
   /** There should exist exactly two time conditions * */
   @Test
+
+
+
   def testInteravlJoinSingleTimeCondition(): Unit = {
     val sql =
       """

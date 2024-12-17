@@ -89,11 +89,17 @@ public class StreamExecIntervalJoin extends ExecNodeBase<RowData>
     public static final String PAD_LEFT_TRANSFORMATION = "pad-left";
     public static final String PAD_RIGHT_TRANSFORMATION = "pad-right";
     public static final String INTERVAL_JOIN_TRANSFORMATION = "interval-join";
-
+    
     public static final String FIELD_NAME_INTERVAL_JOIN_SPEC = "intervalJoinSpec";
+    public static final String FIELD_NAME_EARLY_FIRE_DELAY = "earlyFireDelay";
+    public static final String FIELD_NAME_EARLY_FIRE_FREQUENCY = "earlyFireFrequency";
 
     @JsonProperty(FIELD_NAME_INTERVAL_JOIN_SPEC)
     private final IntervalJoinSpec intervalJoinSpec;
+    @JsonProperty(FIELD_NAME_EARLY_FIRE_DELAY)
+    private final Long earlyFireDelay;
+    @JsonProperty(FIELD_NAME_EARLY_FIRE_FREQUENCY)
+    private final Long earlyFireFrequency;
 
     public StreamExecIntervalJoin(
             ReadableConfig tableConfig,
@@ -101,7 +107,9 @@ public class StreamExecIntervalJoin extends ExecNodeBase<RowData>
             InputProperty leftInputProperty,
             InputProperty rightInputProperty,
             RowType outputType,
-            String description) {
+            String description,
+            Long earlyFireDelay,
+            Long earlyFireFrequency) {
         this(
                 ExecNodeContext.newNodeId(),
                 ExecNodeContext.newContext(StreamExecIntervalJoin.class),
@@ -109,7 +117,9 @@ public class StreamExecIntervalJoin extends ExecNodeBase<RowData>
                 intervalJoinSpec,
                 Lists.newArrayList(leftInputProperty, rightInputProperty),
                 outputType,
-                description);
+                description,
+                earlyFireDelay,
+                earlyFireFrequency);
     }
 
     @JsonCreator
@@ -120,10 +130,14 @@ public class StreamExecIntervalJoin extends ExecNodeBase<RowData>
             @JsonProperty(FIELD_NAME_INTERVAL_JOIN_SPEC) IntervalJoinSpec intervalJoinSpec,
             @JsonProperty(FIELD_NAME_INPUT_PROPERTIES) List<InputProperty> inputProperties,
             @JsonProperty(FIELD_NAME_OUTPUT_TYPE) RowType outputType,
-            @JsonProperty(FIELD_NAME_DESCRIPTION) String description) {
+            @JsonProperty(FIELD_NAME_DESCRIPTION) String description,
+            @JsonProperty(FIELD_NAME_EARLY_FIRE_DELAY) Long earlyFireDelay,
+            @JsonProperty(FIELD_NAME_EARLY_FIRE_FREQUENCY) Long earlyFireFrequency) {
         super(id, context, persistedConfig, inputProperties, outputType, description);
         Preconditions.checkArgument(inputProperties.size() == 2);
         this.intervalJoinSpec = Preconditions.checkNotNull(intervalJoinSpec);
+        this.earlyFireDelay = earlyFireDelay;
+        this.earlyFireFrequency = earlyFireFrequency;
     }
 
     @Override

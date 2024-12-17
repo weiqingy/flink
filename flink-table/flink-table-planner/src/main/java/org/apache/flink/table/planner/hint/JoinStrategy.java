@@ -48,7 +48,10 @@ public enum JoinStrategy {
     NEST_LOOP("NEST_LOOP"),
 
     /** Instructs the optimizer to use lookup join strategy. Only accept key-value hint options. */
-    LOOKUP("LOOKUP");
+    LOOKUP("LOOKUP"),
+
+    /** Instructs the optimizer to use early fire join strategy. Only accept key-value hint options. */
+    EARLY_FIRE("EARLY_FIRE");
 
     private final String joinHintName;
 
@@ -80,6 +83,7 @@ public enum JoinStrategy {
             case SHUFFLE_MERGE:
             case BROADCAST:
             case NEST_LOOP:
+            case EARLY_FIRE:
                 return options.size() > 0;
             case LOOKUP:
                 return null == options || options.size() == 0;
@@ -91,5 +95,11 @@ public enum JoinStrategy {
         String formalizedHintName = hintName.toUpperCase(Locale.ROOT);
         return isJoinStrategy(formalizedHintName)
                 && JoinStrategy.valueOf(formalizedHintName) == LOOKUP;
+    }
+
+    public static boolean isEarlyFireHint(String hintName) {
+        String formalizedHintName = hintName.toUpperCase(Locale.ROOT);
+        return isJoinStrategy(formalizedHintName)
+                && JoinStrategy.valueOf(formalizedHintName) == EARLY_FIRE;
     }
 }

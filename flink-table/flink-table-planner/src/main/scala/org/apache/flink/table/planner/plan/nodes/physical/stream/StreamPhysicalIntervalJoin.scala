@@ -45,7 +45,9 @@ class StreamPhysicalIntervalJoin(
     val originalCondition: RexNode,
     // remaining join condition contains all of join condition except window bounds
     remainingCondition: RexNode,
-    windowBounds: WindowBounds)
+    windowBounds: WindowBounds,
+    earlyFireDelay: Long,
+    earlyFireFrequency: Long)
   extends CommonPhysicalJoin(cluster, traitSet, leftRel, rightRel, remainingCondition, joinType)
   with StreamPhysicalRel {
 
@@ -76,7 +78,9 @@ class StreamPhysicalIntervalJoin(
       joinType,
       originalCondition,
       conditionExpr,
-      windowBounds)
+      windowBounds,
+      earlyFireDelay,
+      earlyFireFrequency)
   }
 
   override def explainTerms(pw: RelWriter): RelWriter = {
@@ -89,6 +93,8 @@ class StreamPhysicalIntervalJoin(
       .input("right", right)
       .item("joinType", joinSpec.getJoinType)
       .item("windowBounds", windowBoundsDesc)
+      .item("earlyFireDelay", earlyFireDelay)
+      .item("earlyFireFrequency", earlyFireFrequency)
       .item(
         "where",
         getExpressionString(
@@ -101,12 +107,14 @@ class StreamPhysicalIntervalJoin(
   }
 
   override def translateToExecNode(): ExecNode[_] = {
-    new StreamExecIntervalJoin(
+    new StreamExecIntervalJoin( 
       unwrapTableConfig(this),
       new IntervalJoinSpec(joinSpec, windowBounds),
       InputProperty.DEFAULT,
       InputProperty.DEFAULT,
       FlinkTypeFactory.toLogicalRowType(getRowType),
-      getRelDetailedDescription)
+      getRelDetailedDescription,
+      earlyFireDelay,
+      earlyFireFrequency)
   }
 }

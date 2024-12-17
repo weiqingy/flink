@@ -35,6 +35,8 @@ import org.apache.calcite.util.Litmus;
 
 import java.time.Duration;
 import java.util.Collections;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -120,6 +122,11 @@ public abstract class FlinkHintStrategies {
                                         HintPredicates.or(
                                                 HintPredicates.CORRELATE, HintPredicates.JOIN))
                                 .optionChecker(LOOKUP_NON_EMPTY_KV_OPTION_CHECKER)
+                                .build())
+                .hintStrategy(
+                        JoinStrategy.EARLY_FIRE.getJoinHintName(),
+                        HintStrategy.builder(HintPredicates.JOIN)
+                                .optionChecker(EARLY_FIRE_OPTION_CHECKER)
                                 .build())
                 .hintStrategy(
                         StateTtlHint.STATE_TTL.getHintName(),
@@ -268,6 +275,57 @@ public abstract class FlinkHintStrategies {
                                                 "Invalid STATE_TTL hint value: {}", e.getMessage());
                                     }
                                 });
+                return true;
+            };
+
+    /**
+     * Option checker for EARLY_FIRE hint that validates early fire configurations.
+     * DELAY (required): Initial delay in milliseconds before first early fire. Must be > 0.
+     * FREQUENCY (optional): Interval in milliseconds between subsequent early fires.
+     * If FREQUENCY is not set, early fire occurs only once after the DELAY.
+     */
+    private static final HintOptionChecker EARLY_FIRE_OPTION_CHECKER =
+            (earlyFireHint, litmus) -> {
+                // Check if DELAY option is present
+                if (!earlyFireHint.kvOptions.containsKey("DELAY")) {
+                    litmus.fail("Invalid EARLY_FIRE hint: DELAY option is required but not specified.");
+                    return false;
+                }
+
+                for (Map.Entry<String, String> option : earlyFireHint.kvOptions.entrySet()) {
+                    String key = option.getKey();
+                    String value = option.getValue();
+
+                    try {
+                        switch (key.toUpperCase(Locale.ROOT)) {
+                            case "DELAY":
+                                long delay = Long.parseLong(value);
+                                litmus.check(
+                                        delay > 0,
+                                        "Invalid EARLY_FIRE hint option: DELAY value must be > 0 milliseconds, but was {} ms",
+                                        delay);
+                                break;
+                            case "FREQUENCY":
+                                long frequency = Long.parseLong(value);
+                                litmus.check(
+                                        frequency > 0,
+                                        "Invalid EARLY_FIRE hint option: FREQUENCY value must be > 0 milliseconds, but was {} ms",
+                                        frequency);
+                                break;
+                            default:
+                                litmus.fail(
+                                        "Invalid EARLY_FIRE hint option: Unsupported option name '{}', only DELAY (milliseconds, required, must be > 0) and FREQUENCY (milliseconds, optional) are supported",
+                                        key);
+                                return false;
+                        }
+                    } catch (NumberFormatException e) {
+                        litmus.fail(
+                                "Invalid EARLY_FIRE hint option: Cannot parse '{}' as a milliseconds value for option '{}'",
+                                value,
+                                key);
+                        return false;
+                    }
+                }
                 return true;
             };
 }
