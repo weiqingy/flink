@@ -237,15 +237,17 @@ class RocksDBMapState<K, N, UK, UV> extends AbstractRocksDBState<K, N, Map<UK, U
 
         try {
             boolean isNull = serializedOldValueInput.readBoolean();
-            UV mapUserValue = null;
+            serializedMigratedValueOutput.writeBoolean(isNull);
             if (!isNull) {
-                mapUserValue = priorMapValueSerializer.deserialize(serializedOldValueInput);
+                priorMapValueSerializer.snapshotConfiguration()
+                        .migrateState(
+                                priorMapValueSerializer,
+                                newMapValueSerializer,
+                                serializedOldValueInput,
+                                serializedMigratedValueOutput);
             }
-            serializedMigratedValueOutput.writeBoolean(mapUserValue == null);
-            newMapValueSerializer.serialize(mapUserValue, serializedMigratedValueOutput);
-        } catch (Exception e) {
-            throw new StateMigrationException(
-                    "Error while trying to migrate RocksDB map state.", e);
+        } catch (Throwable e) {
+            throw new StateMigrationException("Error migrating map state.", e);
         }
     }
 

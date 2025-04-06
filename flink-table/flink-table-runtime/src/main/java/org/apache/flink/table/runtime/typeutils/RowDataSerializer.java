@@ -26,7 +26,9 @@ import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.java.typeutils.runtime.DataInputViewStream;
 import org.apache.flink.api.java.typeutils.runtime.DataOutputViewStream;
+import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.runtime.memory.AbstractPagedInputView;
 import org.apache.flink.runtime.memory.AbstractPagedOutputView;
@@ -42,7 +44,12 @@ import org.apache.flink.util.InstantiationUtil;
 
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
+
+import javax.annotation.Nullable;
 
 /** Serializer for {@link RowData}. */
 @Internal
@@ -56,13 +63,17 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
 
     private transient BinaryRowData reuseRow;
     private transient BinaryRowWriter reuseWriter;
+    private transient TypeSerializerSnapshot<RowData> cachedSnapshot;
+    // Store the original RowType when available
+    private final @Nullable RowType originalRowType;
 
     public RowDataSerializer(RowType rowType) {
         this(
                 rowType.getChildren().toArray(new LogicalType[0]),
                 rowType.getChildren().stream()
                         .map(InternalSerializers::create)
-                        .toArray(TypeSerializer[]::new));
+                        .toArray(TypeSerializer[]::new),
+                rowType);
     }
 
     public RowDataSerializer(LogicalType... types) {
@@ -70,10 +81,19 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
                 types,
                 Arrays.stream(types)
                         .map(InternalSerializers::create)
-                        .toArray(TypeSerializer[]::new));
+                        .toArray(TypeSerializer[]::new),
+                null);
     }
 
     public RowDataSerializer(LogicalType[] types, TypeSerializer<?>[] fieldSerializers) {
+        this(types, fieldSerializers, null);
+    }
+
+    // Private constructor that takes originalRowType
+    private RowDataSerializer(
+            LogicalType[] types,
+            TypeSerializer<?>[] fieldSerializers,
+            @Nullable RowType originalRowType) {
         this.types = types;
         this.fieldSerializers = fieldSerializers;
         this.binarySerializer = new BinaryRowDataSerializer(types.length);
@@ -81,6 +101,7 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
                 IntStream.range(0, types.length)
                         .mapToObj(i -> RowData.createFieldGetter(types[i], i))
                         .toArray(RowData.FieldGetter[]::new);
+        this.originalRowType = originalRowType;
     }
 
     @Override
@@ -270,25 +291,31 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
 
     @Override
     public TypeSerializerSnapshot<RowData> snapshotConfiguration() {
-        return new RowDataSerializerSnapshot(types, fieldSerializers);
+        if (cachedSnapshot == null) {
+            cachedSnapshot = new RowDataSerializerSnapshot(
+                    types, fieldSerializers, originalRowType);
+        }
+        return cachedSnapshot;
     }
 
-    /** {@link TypeSerializerSnapshot} for {@link BinaryRowDataSerializer}. */
+    /** {@link TypeSerializerSnapshot} for {@link RowDataSerializer}. */
     public static final class RowDataSerializerSnapshot implements TypeSerializerSnapshot<RowData> {
-        private static final int CURRENT_VERSION = 3;
+        private static final int CURRENT_VERSION = 4;
 
         private LogicalType[] previousTypes;
         private NestedSerializersSnapshotDelegate nestedSerializersSnapshotDelegate;
+        private @Nullable RowType originalRowType;
 
         @SuppressWarnings("unused")
         public RowDataSerializerSnapshot() {
             // this constructor is used when restoring from a checkpoint/savepoint.
         }
 
-        RowDataSerializerSnapshot(LogicalType[] types, TypeSerializer[] serializers) {
+        RowDataSerializerSnapshot(LogicalType[] types, TypeSerializer[] serializers, @Nullable RowType originalRowType) {
             this.previousTypes = types;
             this.nestedSerializersSnapshotDelegate =
                     new NestedSerializersSnapshotDelegate(serializers);
+            this.originalRowType = originalRowType;
         }
 
         @Override
@@ -303,6 +330,16 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
             for (LogicalType previousType : previousTypes) {
                 InstantiationUtil.serializeObject(stream, previousType);
             }
+
+            // Write whether we have RowType information
+            boolean hasRowType = originalRowType != null;
+            out.writeBoolean(hasRowType);
+
+            // If we have RowType, serialize it
+            if (hasRowType) {
+                InstantiationUtil.serializeObject(stream, originalRowType);
+            }
+
             nestedSerializersSnapshotDelegate.writeNestedSerializerSnapshots(out);
         }
 
@@ -320,6 +357,24 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
                     throw new IOException(e);
                 }
             }
+
+            // In version 4+, we added RowType information
+            if (readVersion >= 4) {
+                boolean hasRowType = in.readBoolean();
+                if (hasRowType) {
+                    try {
+                        originalRowType = InstantiationUtil.deserializeObject(stream, userCodeClassLoader);
+                    } catch (ClassNotFoundException e) {
+                        throw new IOException(e);
+                    }
+                } else {
+                    originalRowType = null;
+                }
+            } else {
+                // For older versions, no RowType was stored
+                originalRowType = null;
+            }
+
             this.nestedSerializersSnapshotDelegate =
                     NestedSerializersSnapshotDelegate.readNestedSerializerSnapshots(
                             in, userCodeClassLoader);
@@ -329,7 +384,8 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
         public RowDataSerializer restoreSerializer() {
             return new RowDataSerializer(
                     previousTypes,
-                    nestedSerializersSnapshotDelegate.getRestoredNestedSerializers());
+                    nestedSerializersSnapshotDelegate.getRestoredNestedSerializers(),
+                    originalRowType);
         }
 
         @Override
@@ -340,24 +396,187 @@ public class RowDataSerializer extends AbstractRowDataSerializer<RowData> {
             }
 
             RowDataSerializer newRowSerializer = (RowDataSerializer) newSerializer;
-            if (!Arrays.equals(previousTypes, newRowSerializer.types)) {
+            TypeSerializer<?>[] alignedNewSerializers = new TypeSerializer<?>[previousTypes.length];
+            boolean requiresMigration = false;
+
+            if (originalRowType != null && newRowSerializer.originalRowType != null) {
+                // Use name-based compatibility when both have RowType info
+                List<RowType.RowField> oldFields = originalRowType.getFields();
+                List<RowType.RowField> newFields = newRowSerializer.originalRowType.getFields();
+                int[] oldPosToNewPos = builPosMapping(oldFields, newFields);
+                int[] newPosToOldPos = builPosMapping(newFields, oldFields);
+
+                // Check that newly added fields are nullable
+                for (int i = 0; i < newPosToOldPos.length; i++) {
+                    if (newPosToOldPos[i] == -1 && !newFields.get(i).getType().isNullable()) {
+                        return TypeSerializerSchemaCompatibility.incompatible();
+                    }
+                }
+
+                for (int i = 0; i < oldPosToNewPos.length; i++) {
+                    // check if the old field exists in the new schema
+                    if (oldPosToNewPos[i] == -1) {
+                        return TypeSerializerSchemaCompatibility.incompatible();
+                    }
+                    int newPos = oldPosToNewPos[i];
+                    alignedNewSerializers[i] = newRowSerializer.fieldSerializers[newPos];
+
+                    // Check if field position changed
+                    if (newPos != i) {
+                        requiresMigration = true;
+                    }
+                }
+                requiresMigration = requiresMigration || newRowSerializer.getArity() > previousTypes.length;
+            } else {
+                // Fall back to index-based compatibility
+                if (previousTypes.length > newRowSerializer.types.length) {
+                    return TypeSerializerSchemaCompatibility.incompatible();
+                }
+
+                // Check nullability of new fields
+                for (int i = previousTypes.length; i < newRowSerializer.types.length; i++) {
+                    if (!newRowSerializer.types[i].isNullable()) {
+                        return TypeSerializerSchemaCompatibility.incompatible();
+                    }
+                }
+                // Use only common fields for compatibility check
+                alignedNewSerializers = Arrays.copyOf(newRowSerializer.fieldSerializers, previousTypes.length);
+
+                // Check compatibility of common fields
+                requiresMigration = previousTypes.length < newRowSerializer.types.length;
+            }
+
+            // Check compatibility of serializers
+            CompositeTypeSerializerUtil.IntermediateCompatibilityResult<RowData> result =
+                    CompositeTypeSerializerUtil.constructIntermediateCompatibilityResult(
+                            alignedNewSerializers, nestedSerializersSnapshotDelegate.getNestedSerializerSnapshots());
+
+            return determineCompatibility(result, requiresMigration);
+        }
+
+        private TypeSerializerSchemaCompatibility<RowData> determineCompatibility(
+            CompositeTypeSerializerUtil.IntermediateCompatibilityResult<RowData> result, boolean requiresMigration) {
+            if (result.isIncompatible()) {
                 return TypeSerializerSchemaCompatibility.incompatible();
             }
-
-            CompositeTypeSerializerUtil.IntermediateCompatibilityResult<RowData>
-                    intermediateResult =
-                            CompositeTypeSerializerUtil.constructIntermediateCompatibilityResult(
-                                    newRowSerializer.fieldSerializers,
-                                    nestedSerializersSnapshotDelegate
-                                            .getNestedSerializerSnapshots());
-
-            if (intermediateResult.isCompatibleWithReconfiguredSerializer()) {
-                RowDataSerializer reconfiguredCompositeSerializer = restoreSerializer();
+            if (result.isCompatibleAfterMigration() || requiresMigration) {
+                return TypeSerializerSchemaCompatibility.compatibleAfterMigration();
+            }
+            if (result.isCompatibleWithReconfiguredSerializer()) {
                 return TypeSerializerSchemaCompatibility.compatibleWithReconfiguredSerializer(
-                        reconfiguredCompositeSerializer);
+                        restoreSerializer());
+            }
+            return TypeSerializerSchemaCompatibility.compatibleAsIs();
+        }
+
+        // Returns -1 for fields in fromFields not present in the toFields.
+        private int[] builPosMapping(List<RowType.RowField> fromFields, List<RowType.RowField> toFields) {
+            Map<String, Integer> toFieldsMap = new HashMap<>(toFields.size());
+            for (int i = 0; i < toFields.size(); i++) {
+                toFieldsMap.put(toFields.get(i).getName(), i);
             }
 
-            return intermediateResult.getFinalResult();
+            int[] mapping = new int[fromFields.size()];
+            for (int i = 0; i < fromFields.size(); i++) {
+                String fromName = fromFields.get(i).getName();
+                mapping[i] = toFieldsMap.getOrDefault(fromName, -1);
+            }
+            return mapping;
+        }
+
+        // ---------------------------------------------------------------------------------
+        //  The following methods handle state migration when the RowData schema changes.
+        // ---------------------------------------------------------------------------------
+        @Override
+        public void migrateState(
+                TypeSerializer<RowData> oldSerializer,
+                TypeSerializer<RowData> newSerializer,
+                DataInputDeserializer serializedOldValueInput,
+                DataOutputSerializer serializedMigratedValueOutput) {
+            if (!(newSerializer instanceof RowDataSerializer)) {
+                throw new IllegalStateException("Expected RowDataSerializer but got " + newSerializer.getClass().getName());
+            }
+            try {
+                RowDataSerializer oldRowSerializer = (RowDataSerializer) oldSerializer;
+                RowDataSerializer newRowSerializer = (RowDataSerializer) newSerializer;
+                RowData oldData = oldSerializer.deserialize(serializedOldValueInput);
+
+                // Create and migrate the new row data
+                GenericRowData newData = getNewRowData(oldData, oldRowSerializer, newRowSerializer);
+
+                // Serialize the migrated data
+                newRowSerializer.serialize(newData, serializedMigratedValueOutput);
+            } catch (IOException e) {
+                throw new RuntimeException("Error during schema migration", e);
+            }
+        }
+
+        @Override
+        public void migrateElement(
+                TypeSerializer<RowData> oldSerializer,
+                TypeSerializer<RowData> newSerializer,
+                RowData element,
+                DataOutputSerializer serializedMigratedValueOutput) throws IOException {
+            if (!(newSerializer instanceof RowDataSerializer)) {
+                throw new IllegalStateException("Expected RowDataSerializer but got " + newSerializer.getClass().getName());
+            }
+            try {
+                RowDataSerializer oldRowSerializer = (RowDataSerializer) oldSerializer;
+                RowDataSerializer newRowSerializer = (RowDataSerializer) newSerializer;
+
+                // Create and migrate the row data directly from the provided element
+                GenericRowData newData = getNewRowData(element, oldRowSerializer, newRowSerializer);
+
+                // Serialize the migrated data
+                newRowSerializer.serialize(newData, serializedMigratedValueOutput);
+            } catch (IOException e) {
+                throw new RuntimeException("Error during element migration", e);
+            }
+        }
+
+        private GenericRowData getNewRowData(
+                RowData oldData,
+                RowDataSerializer oldSerializer,
+                RowDataSerializer newSerializer) {
+            GenericRowData newData = new GenericRowData(newSerializer.getArity());
+            newData.setRowKind(oldData.getRowKind());
+
+            // Determine mapping strategy and prepare position mappings
+            boolean useNameBasedMigration =
+                    oldSerializer.originalRowType != null && newSerializer.originalRowType != null;
+
+            int[] positions = new int[newSerializer.getArity()];
+            if (useNameBasedMigration) {
+                // Name-based field mapping
+                List<RowType.RowField> oldFields = oldSerializer.originalRowType.getFields();
+                List<RowType.RowField> newFields = newSerializer.originalRowType.getFields();
+                positions = builPosMapping(newFields, oldFields);
+            } else {
+                // Index-based mapping - map positions 1:1 up to the common field count
+                int commonFields = Math.min(oldData.getArity(), newSerializer.getArity());
+                for (int i = 0; i < newSerializer.getArity(); i++) {
+                    positions[i] = i < commonFields ? i : -1;
+                }
+            }
+
+            // Process all fields using the calculated mapping
+            for (int newPos = 0; newPos < newSerializer.getArity(); newPos++) {
+                int oldPos = positions[newPos];
+                if (oldPos != -1 && !oldData.isNullAt(oldPos)) {
+                    Object fieldValue = oldSerializer.fieldGetters[oldPos].getFieldOrNull(oldData);
+                    if (fieldValue instanceof RowData) {
+                        fieldValue = getNewRowData(
+                                (RowData) fieldValue,
+                                (RowDataSerializer) oldSerializer.fieldSerializers[oldPos],
+                                (RowDataSerializer) newSerializer.fieldSerializers[newPos]);
+                    }
+                    newData.setField(newPos, fieldValue);
+                } else {
+                    newData.setField(newPos, null);
+                }
+            }
+
+            return newData;
         }
     }
 }

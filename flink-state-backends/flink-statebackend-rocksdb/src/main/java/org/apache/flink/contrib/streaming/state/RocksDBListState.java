@@ -22,6 +22,7 @@ import org.apache.flink.api.common.state.ListState;
 import org.apache.flink.api.common.state.State;
 import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.common.typeutils.base.ListSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.core.memory.DataInputDeserializer;
@@ -227,16 +228,21 @@ class RocksDBListState<K, N, V> extends AbstractRocksDBState<K, N, List<V>>
                 ((ListSerializer<V>) newSerializer).getElementSerializer();
 
         try {
+            TypeSerializerSnapshot<V> elementSerializerSnapshot = 
+                    priorElementSerializer.snapshotConfiguration();     
             while (serializedOldValueInput.available() > 0) {
-                V element =
-                        ListDelimitedSerializer.deserializeNextElement(
-                                serializedOldValueInput, priorElementSerializer);
-                newElementSerializer.serialize(element, serializedMigratedValueOutput);
-                if (serializedOldValueInput.available() > 0) {
+                V element = ListDelimitedSerializer.deserializeNextElement(
+                        serializedOldValueInput, priorElementSerializer);                                           
+                elementSerializerSnapshot.migrateElement(
+                        priorElementSerializer, 
+                        newElementSerializer, 
+                        element, 
+                        serializedMigratedValueOutput);                        
+               if (serializedOldValueInput.available() > 0) {
                     serializedMigratedValueOutput.write(DELIMITER);
                 }
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             throw new StateMigrationException(
                     "Error while trying to migrate RocksDB list state.", e);
         }

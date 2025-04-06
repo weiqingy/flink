@@ -188,9 +188,13 @@ public abstract class AbstractRocksDBState<K, N, V> implements InternalKvState<K
             throws StateMigrationException {
 
         try {
-            V value = priorSerializer.deserialize(serializedOldValueInput);
-            newSerializer.serialize(value, serializedMigratedValueOutput);
-        } catch (Exception e) {
+            priorSerializer.snapshotConfiguration()
+                    .migrateState(
+                            priorSerializer,
+                            newSerializer,
+                            serializedOldValueInput,
+                            serializedMigratedValueOutput);
+        } catch (Throwable e) {
             throw new StateMigrationException("Error while trying to migrate RocksDB state.", e);
         }
     }

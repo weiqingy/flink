@@ -19,7 +19,9 @@
 package org.apache.flink.api.common.typeutils;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataInputView;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.core.memory.DataOutputView;
 
 import java.io.IOException;
@@ -129,6 +131,39 @@ public interface TypeSerializerSnapshot<T> {
      */
     TypeSerializerSchemaCompatibility<T> resolveSchemaCompatibility(
             TypeSerializer<T> newSerializer);
+
+    /**
+     * Migrate the state of the serializer.
+     * 
+     * @param priorSerializer the prior serializer to migrate from.
+     * @param newSerializer the new serializer to migrate to.
+     * @param serializedOldValueInput the serialized old value input.
+     * @param serializedMigratedValueOutput the serialized migrated value output.
+     */
+    default void migrateState(
+                      TypeSerializer<T> priorSerializer,                            
+                      TypeSerializer<T> newSerializer, 
+                      DataInputDeserializer serializedOldValueInput, 
+                      DataOutputSerializer serializedMigratedValueOutput) throws IOException {
+        T value = priorSerializer.deserialize(serializedOldValueInput);
+        newSerializer.serialize(value, serializedMigratedValueOutput);
+    }
+
+    /**
+     * Migrate an element.
+     * 
+     * @param priorSerializer the prior serializer to migrate from.
+     * @param newSerializer the new serializer to migrate to.
+     * @param element the already deserialized element to migrate.
+     * @param serializedMigratedValueOutput the output where the migrated value will be written.
+     */
+    default void migrateElement(
+                      TypeSerializer<T> priorSerializer,           
+                      TypeSerializer<T> newSerializer,
+                      T element,
+                      DataOutputSerializer serializedMigratedValueOutput) throws IOException {
+        newSerializer.serialize(element, serializedMigratedValueOutput);
+    }
 
     // ------------------------------------------------------------------------
     //  read / write utilities

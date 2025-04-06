@@ -21,7 +21,10 @@ package org.apache.flink.table.runtime.typeutils;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.typeutils.SerializerTestInstance;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
+import org.apache.flink.core.memory.DataInputDeserializer;
+import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RawValueData;
@@ -38,6 +41,7 @@ import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.RawType;
+import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.testutils.DeeplyEqualsChecker;
 
@@ -195,6 +199,107 @@ abstract class RowDataSerializerTest extends SerializerTestInstance<RowData> {
 
         WrappedString(String content) {
             this.content = content;
+        }
+    }
+
+    /**
+     * A simple test for the serializer snapshot functionality, covering the originalRowType preservation.
+     */
+    static final class RowDataSerializerSnapshotTest extends RowDataSerializerTest {
+        public RowDataSerializerSnapshotTest() {
+            super(getRowSerializer(), getData());
+        }
+
+        private static RowData[] getData() {
+            // Create some test data
+            GenericRowData row = new GenericRowData(2);
+            row.setField(0, fromString("Test"));
+            row.setField(1, 42);
+            return new RowData[] {row};
+        }
+
+        private static RowDataSerializer getRowSerializer() {
+            // Create a serializer with explicit RowType (with field names)
+            return new RowDataSerializer(
+                    RowType.of(
+                            new LogicalType[] {VarCharType.STRING_TYPE, new IntType()},
+                            new String[] {"name", "age"}));
+        }
+
+        /**
+         * Test that the serializer reuses the same snapshot instance when snapshotConfiguration()
+         * is called multiple times.
+         */
+        @Test
+        public void testSnapshotCaching() {
+            RowDataSerializer serializer = getRowSerializer();
+
+            // First call should create a new snapshot
+            TypeSerializerSnapshot<RowData> snapshot1 = serializer.snapshotConfiguration();
+
+            // Second call should return the same cached instance
+            TypeSerializerSnapshot<RowData> snapshot2 = serializer.snapshotConfiguration();
+
+            assertThat(snapshot2).isSameAs(snapshot1);
+        }
+
+        /**
+         * Test that the original RowType is preserved when serializing and deserializing
+         * the serializer snapshot.
+         */
+        @Test
+        public void testOriginalRowTypePreservation() throws Exception {
+            RowDataSerializer serializer = getRowSerializer();
+
+            // Serialize the snapshot
+            TypeSerializerSnapshot<RowData> snapshot = serializer.snapshotConfiguration();
+            DataOutputSerializer out = new DataOutputSerializer(128);
+            snapshot.writeSnapshot(out);
+
+            // Deserialize the snapshot
+            RowDataSerializer.RowDataSerializerSnapshot restoredSnapshot =
+                    new RowDataSerializer.RowDataSerializerSnapshot();
+            restoredSnapshot.readSnapshot(
+                    restoredSnapshot.getCurrentVersion(),
+                    new DataInputDeserializer(out.getCopyOfBuffer()),
+                    Thread.currentThread().getContextClassLoader());
+
+            // Restore the serializer and check it works correctly
+            RowDataSerializer restoredSerializer = restoredSnapshot.restoreSerializer();
+
+            // Verify the serializer works correctly with test data
+            RowData testData = getData()[0];
+            RowData deserializedData = serializeAndDeserialize(testData, restoredSerializer);
+
+            // Verify the data is correctly preserved
+            assertThat(deserializedData.getString(0).toString()).isEqualTo("Test");
+            assertThat(deserializedData.getInt(1)).isEqualTo(42);
+        }
+
+        /**
+         * Tests that the snapshot version is properly set to the current version (4).
+         */
+        @Test
+        public void testSnapshotVersionCompatibility() throws Exception {
+            RowDataSerializer serializer = getRowSerializer();
+
+            // Get snapshot and verify current version
+            RowDataSerializer.RowDataSerializerSnapshot snapshot =
+                    (RowDataSerializer.RowDataSerializerSnapshot) serializer.snapshotConfiguration();
+
+            // Version should be the current one (4 as of the implementation)
+            assertThat(snapshot.getCurrentVersion()).isEqualTo(4);
+        }
+
+        /**
+         * Helper method to serialize and deserialize data with a given serializer.
+         */
+        private RowData serializeAndDeserialize(RowData original, RowDataSerializer serializer) throws Exception {
+            DataOutputSerializer out = new DataOutputSerializer(128);
+            serializer.serialize(original, out);
+
+            DataInputDeserializer in = new DataInputDeserializer(out.getCopyOfBuffer());
+            return serializer.deserialize(in);
         }
     }
 
