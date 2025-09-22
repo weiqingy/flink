@@ -697,6 +697,8 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
     protected void endData(StopMode mode) throws Exception {
 
         if (mode == StopMode.DRAIN) {
+            // Emit FINISHED status instead of IDLE to properly exclude from watermark aggregation
+            emitFinishedStatus();
             advanceToEndOfEventTime();
         }
         // finish all operators in a chain effect way
