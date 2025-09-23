@@ -281,7 +281,7 @@ public class StatusWatermarkValve {
     }
 
     /**
-     * Determines the overall status based on TL's recommended aggregation rules:
+     * Determines the overall status:
      * 1. If there are ACTIVE channels: status = ACTIVE
      * 2. Else if there are IDLE channels: status = IDLE
      * 3. Else (all channels FINISHED): status = FINISHED
