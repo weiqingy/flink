@@ -139,7 +139,7 @@ public class StatusWatermarkValve {
         recalculateAndEmitWatermarkAndStatus(output, channelIndex);
     }
 
-    /** Updates channel status and watermark alignment based on status transition. */
+    // Updates channel status and watermark alignment based on status transition.
     private void updateChannelStatusAndAlignment(
             WatermarkStatus newStatus, int channelIndex, WatermarkStatus currentStatus) {
 
@@ -163,8 +163,7 @@ public class StatusWatermarkValve {
     /**
      * Recalculates watermark and status based on aggregation rules, with optimization to only
      * recalculate when the changed channel was contributing to current watermark.
-     *
-     * <p>Uses scenario-specific emission order to preserve original semantics:
+     * Uses scenario-specific emission order to preserve original semantics:
      * - FINISHED transitions: Status first (termination signal) → Watermark (tombstone)
      * - IDLE transitions: Watermark first (final progression) → Status (state change)
      * - ACTIVE transitions: Status only (reactivation signal)
