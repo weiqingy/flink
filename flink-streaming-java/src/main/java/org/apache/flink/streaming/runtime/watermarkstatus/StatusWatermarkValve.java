@@ -132,11 +132,14 @@ public class StatusWatermarkValve {
             return;
         }
 
-        // Update channel status and alignment
+        // Capture old state before any modifications for recalculation logic
+        long oldWatermark = channelStatuses[channelIndex].watermark;
+
+        // Update channel status and alignment (may modify watermark for FINISHED channels)
         updateChannelStatusAndAlignment(watermarkStatus, channelIndex, currentStatus);
 
-        // Recalculate and emit watermark/status if needed (preserving optimization)
-        recalculateAndEmitWatermarkAndStatus(output, channelIndex);
+        // Recalculate and emit using old watermark for decision logic
+        recalculateAndEmitWatermarkAndStatus(output, channelIndex, oldWatermark);
     }
 
     // Updates channel status and watermark alignment based on status transition.
@@ -168,13 +171,15 @@ public class StatusWatermarkValve {
      * - FINISHED transitions: Status first (termination signal) → Watermark (tombstone)
      * - IDLE transitions: Watermark first (final progression) → Status (state change)
      * - ACTIVE transitions: Status only (reactivation signal)
+     *
+     * @param oldWatermark the channel's watermark value before any status transition updates
      */
-    private void recalculateAndEmitWatermarkAndStatus(DataOutput<?> output, int channelIndex)
-            throws Exception {
+    private void recalculateAndEmitWatermarkAndStatus(
+            DataOutput<?> output, int channelIndex, long oldWatermark) throws Exception {
 
         WatermarkStatus newOverallStatus = determineOverallStatus();
-        boolean shouldRecalculateWatermark =
-                channelStatuses[channelIndex].watermark == lastOutputWatermark;
+        // Use old watermark to determine if this channel was contributing to current output
+        boolean shouldRecalculateWatermark = oldWatermark == lastOutputWatermark;
         boolean statusChanged = !newOverallStatus.equals(lastOutputWatermarkStatus);
 
         if (!statusChanged && !shouldRecalculateWatermark) {

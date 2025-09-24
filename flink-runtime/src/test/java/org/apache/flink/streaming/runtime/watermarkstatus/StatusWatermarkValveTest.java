@@ -431,6 +431,22 @@ class StatusWatermarkValveTest {
         assertThat(valveOutput.popLastSeenOutput()).isNull();
     }
 
+    @Test
+    public void testFinishedStatusSetsMaxValueWatermark() throws Exception {
+        // FINISHED channels must have Long.MAX_VALUE watermark
+        StatusWatermarkValve valve = new StatusWatermarkValve(1);
+
+        valve.inputWatermark(new Watermark(100), 0, new StatusWatermarkOutput());
+
+        // Before: channel has input watermark
+        assertEquals(100L, valve.getInputChannelStatus(0).watermark);
+
+        valve.inputWatermarkStatus(WatermarkStatus.FINISHED, 0, new StatusWatermarkOutput());
+
+        // After: FINISHED channel gets Long.MAX_VALUE
+        assertEquals(Long.MAX_VALUE, valve.getInputChannelStatus(0).watermark);
+    }
+
     private static class StatusWatermarkOutput implements PushingAsyncDataInput.DataOutput {
 
         private BlockingQueue<StreamElement> allOutputs = new LinkedBlockingQueue<>();
