@@ -146,7 +146,8 @@ public class StatusWatermarkValve {
         channelStatuses[channelIndex].watermarkStatus = newStatus;
 
         if (newStatus.isFinished()) {
-            // FINISHED channels are excluded from watermark aggregation
+            // FINISHED channels get MAX_VALUE watermark and are excluded from aggregation
+            channelStatuses[channelIndex].watermark = Long.MAX_VALUE;
             channelStatuses[channelIndex].isWatermarkAligned = false;
         } else if (newStatus.isIdle()) {
             // IDLE channels are not aligned
