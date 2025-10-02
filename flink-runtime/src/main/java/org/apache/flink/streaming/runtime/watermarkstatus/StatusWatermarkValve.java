@@ -229,28 +229,19 @@ public class StatusWatermarkValve {
             // the subpartition is now idle, therefore not aligned
             markWatermarkUnaligned(subpartitionStatus);
 
-            // if all subpartitions of the valve are now idle, we need to output an idle stream
-            // status from the valve (this also marks the valve as idle)
+            // if all non-finished subpartitions are now idle, we need to output appropriate status
             if (!SubpartitionStatus.hasActiveSubpartitions(subpartitionStatuses)) {
 
-                // now that all subpartitions are idle and no subpartitions will continue to advance
-                // its
-                // watermark,
-                // we should "flush" all watermarks across all subpartitions; effectively, this
-                // means
-                // emitting
-                // the max watermark across all subpartitions as the new watermark. Also, since we
-                // already try to advance
-                // the min watermark as subpartitions individually become IDLE, here we only need to
-                // perform the flush
-                // if the watermark of the last active subpartition that just became idle is the
-                // current
-                // min watermark.
+                // now that all active subpartitions are idle and only finished subpartitions might remain,
+                // we should "flush" watermarks from non-finished subpartitions only.
+                // FINISHED subpartitions are excluded from aggregation.
                 if (subpartitionStatus.watermark == lastOutputWatermark) {
-                    findAndOutputMaxWatermarkAcrossAllSubpartitions(output);
+                    findAndOutputMaxWatermarkAcrossNonFinishedSubpartitions(output);
                 }
 
-                lastOutputWatermarkStatus = WatermarkStatus.IDLE;
+                // Determine overall status: IDLE if any non-finished exist, FINISHED if all are finished
+                WatermarkStatus newOverallStatus = determineOverallStatus();
+                lastOutputWatermarkStatus = newOverallStatus;
                 output.emitWatermarkStatus(lastOutputWatermarkStatus);
             } else if (subpartitionStatus.watermark == lastOutputWatermark) {
                 // if the watermark of the subpartition that just became idle equals the last output

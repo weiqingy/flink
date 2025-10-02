@@ -710,7 +710,7 @@ public abstract class StreamTask<OUT, OP extends StreamOperator<OUT>>
 
         this.endOfDataReceived = true;
     }
-    
+
     protected void notifyEndOfData() {
         environment.getTaskManagerActions().notifyEndOfData(environment.getExecutionId());
     }
