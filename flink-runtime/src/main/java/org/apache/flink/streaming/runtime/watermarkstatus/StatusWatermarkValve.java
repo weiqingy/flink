@@ -209,6 +209,17 @@ public class StatusWatermarkValve {
         // consumes multiple subpartitions, so we do not need to map channelIndex into
         // subpartitionStatusIndex for now, like what is done on Watermarks.
 
+        // Handle transition to FINISHED status
+        if (watermarkStatus.isFinished() && !subpartitionStatus.watermarkStatus.isFinished()) {
+            subpartitionStatus.watermarkStatus = WatermarkStatus.FINISHED;
+            // Fix side-effect: immediately update watermark to Long.MAX_VALUE
+            subpartitionStatus.watermark = Long.MAX_VALUE;
+            markWatermarkUnaligned(subpartitionStatus);
+
+            handleFinishedStatusTransition(output);
+            return;
+        }
+
         // only account for watermark status inputs that will result in a status change for the
         // subpartition
         if (watermarkStatus.isIdle() && subpartitionStatus.watermarkStatus.isActive()) {
@@ -218,28 +229,19 @@ public class StatusWatermarkValve {
             // the subpartition is now idle, therefore not aligned
             markWatermarkUnaligned(subpartitionStatus);
 
-            // if all subpartitions of the valve are now idle, we need to output an idle stream
-            // status from the valve (this also marks the valve as idle)
+            // if all non-finished subpartitions are now idle, we need to output appropriate status
             if (!SubpartitionStatus.hasActiveSubpartitions(subpartitionStatuses)) {
 
-                // now that all subpartitions are idle and no subpartitions will continue to advance
-                // its
-                // watermark,
-                // we should "flush" all watermarks across all subpartitions; effectively, this
-                // means
-                // emitting
-                // the max watermark across all subpartitions as the new watermark. Also, since we
-                // already try to advance
-                // the min watermark as subpartitions individually become IDLE, here we only need to
-                // perform the flush
-                // if the watermark of the last active subpartition that just became idle is the
-                // current
-                // min watermark.
+                // now that all active subpartitions are idle and only finished subpartitions might remain,
+                // we should "flush" watermarks from non-finished subpartitions only.
+                // FINISHED subpartitions are excluded from aggregation.
                 if (subpartitionStatus.watermark == lastOutputWatermark) {
-                    findAndOutputMaxWatermarkAcrossAllSubpartitions(output);
+                    findAndOutputMaxWatermarkAcrossNonFinishedSubpartitions(output);
                 }
 
-                lastOutputWatermarkStatus = WatermarkStatus.IDLE;
+                // Determine overall status: IDLE if any non-finished exist, FINISHED if all are finished
+                WatermarkStatus newOverallStatus = determineOverallStatus();
+                lastOutputWatermarkStatus = newOverallStatus;
                 output.emitWatermarkStatus(lastOutputWatermarkStatus);
             } else if (subpartitionStatus.watermark == lastOutputWatermark) {
                 // if the watermark of the subpartition that just became idle equals the last output
@@ -337,6 +339,81 @@ public class StatusWatermarkValve {
             output.emitWatermark(new Watermark(lastOutputWatermark));
         }
     }
+
+    private void handleFinishedStatusTransition(DataOutput<?> output) throws Exception {
+        WatermarkStatus newOverallStatus = determineOverallStatus();
+
+        if (!newOverallStatus.equals(lastOutputWatermarkStatus)) {
+            if (newOverallStatus.isFinished()) {
+                // All subpartitions are finished - emit FINISHED status then MAX_VALUE watermark
+                lastOutputWatermarkStatus = WatermarkStatus.FINISHED;
+                output.emitWatermarkStatus(lastOutputWatermarkStatus);
+
+                lastOutputWatermark = Long.MAX_VALUE;
+                output.emitWatermark(new Watermark(lastOutputWatermark));
+            } else if (newOverallStatus.isIdle()) {
+                // Some subpartitions still idle - emit max watermark of non-finished then IDLE status
+                findAndOutputMaxWatermarkAcrossNonFinishedSubpartitions(output);
+
+                lastOutputWatermarkStatus = WatermarkStatus.IDLE;
+                output.emitWatermarkStatus(lastOutputWatermarkStatus);
+            }
+        } else {
+            // Status same but need to recalculate watermark excluding finished subpartitions
+            if (!lastOutputWatermarkStatus.isFinished()) {
+                findAndOutputMaxWatermarkAcrossNonFinishedSubpartitions(output);
+            }
+        }
+    }
+
+    private WatermarkStatus determineOverallStatus() {
+        boolean hasActive = false;
+        boolean hasIdle = false;
+
+        for (Map<Integer, SubpartitionStatus> map : subpartitionStatuses) {
+            for (SubpartitionStatus status : map.values()) {
+                if (status.watermarkStatus.isActive()) {
+                    hasActive = true;
+                } else if (status.watermarkStatus.isIdle()) {
+                    hasIdle = true;
+                }
+            }
+        }
+
+        if (hasActive) {
+            return WatermarkStatus.ACTIVE;
+        } else if (hasIdle) {
+            return WatermarkStatus.IDLE;
+        } else {
+            return WatermarkStatus.FINISHED;
+        }
+    }
+
+    private void findAndOutputMaxWatermarkAcrossNonFinishedSubpartitions(DataOutput<?> output)
+            throws Exception {
+        long maxWatermark = Long.MIN_VALUE;
+        boolean hasNonFinishedSubpartitions = false;
+
+        for (Map<Integer, SubpartitionStatus> map : subpartitionStatuses) {
+            for (SubpartitionStatus subpartitionStatus : map.values()) {
+                if (!subpartitionStatus.watermarkStatus.isFinished()) {
+                    hasNonFinishedSubpartitions = true;
+                    maxWatermark = Math.max(subpartitionStatus.watermark, maxWatermark);
+                }
+            }
+        }
+
+        if (hasNonFinishedSubpartitions && maxWatermark > lastOutputWatermark) {
+            lastOutputWatermark = maxWatermark;
+            output.emitWatermark(new Watermark(lastOutputWatermark));
+        } else if (!hasNonFinishedSubpartitions) {
+            // All subpartitions are finished - emit MAX_VALUE
+            lastOutputWatermark = Long.MAX_VALUE;
+            output.emitWatermark(new Watermark(lastOutputWatermark));
+        }
+    }
+
+
 
     /**
      * An {@code SubpartitionStatus} keeps track of a subpartition's last watermark, stream status,
