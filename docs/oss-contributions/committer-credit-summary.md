@@ -184,6 +184,7 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL, state (s
 ## 7. Evangelism (talks / articles / promotion)
 
 **Flink Forward conference talks (multi-year track record):**
+- **Flink Forward 2026** — "Flink Agents at LinkedIn: Early Enterprise Exploration and the Road Ahead"
 - **Flink Forward 2025** — "Powering Stateful Joins at Scale with Flink SQL at LinkedIn"
 - **Flink Forward 2023** — "Powering Stateful Applications with Managed Flink SQL Platform at LinkedIn"
 - **Flink Forward 2022** — "Building a Fully Managed Stream Processing Platform on Flink at Scale for LinkedIn"
