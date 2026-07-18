@@ -127,6 +127,7 @@ The hint accepts the following options:
 
 | Option | Required | Description |
 | --- | --- | --- |
+| `target` | no | The operator kind the hint applies to. Currently only `interval_join` is supported; any other value is an error. When omitted, the hint applies to the interval join. |
 | `delay` | yes | A positive duration (for example `'5s'`) measured from a row's time attribute. The speculative null-padded row is emitted once this delay elapses without a match. |
 | `time_mode` | no | Either `rowtime` or `proctime`. Controls whether the delay is measured against the watermark (`rowtime`) or wall-clock time (`proctime`). Defaults to `rowtime` for an event-time join and `proctime` for a processing-time join. Setting `'time_mode'='proctime'` on an event-time join triggers early fire on wall-clock time instead of the watermark. Setting `'time_mode'='rowtime'` on a processing-time join is an error. |
 

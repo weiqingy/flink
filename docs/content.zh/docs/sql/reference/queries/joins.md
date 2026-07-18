@@ -122,6 +122,7 @@ AND o.order_time BETWEEN s.ship_time - INTERVAL '10' SECOND AND s.ship_time + IN
 
 | 选项 | 是否必填 | 描述 |
 | --- | --- | --- |
+| `target` | 否 | 该提示所作用的算子类型。目前仅支持 `interval_join`，其他取值会报错。省略时，该提示作用于 interval join。 |
 | `delay` | 是 | 一个正的时间长度（例如 `'5s'`），从行的时间属性开始计算。窗口内没有匹配时，在该延迟过去后输出推测性的 null 补齐行。 |
 | `time_mode` | 否 | 取值为 `rowtime` 或 `proctime`，用于控制延迟是相对水位线（`rowtime`）还是相对墙上时钟（`proctime`）来计算。事件时间 join 默认为 `rowtime`，处理时间 join 默认为 `proctime`。在事件时间 join 上设置 `'time_mode'='proctime'` 会改为按墙上时钟触发提前触发。在处理时间 join 上设置 `'time_mode'='rowtime'` 会报错。 |
 

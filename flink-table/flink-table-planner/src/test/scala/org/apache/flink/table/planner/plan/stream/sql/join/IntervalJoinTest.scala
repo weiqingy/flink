@@ -410,6 +410,33 @@ class IntervalJoinTest extends TableTestBase {
   }
 
   @Test
+  def testEarlyFireExplicitTargetIntervalJoin(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE('target'='interval_join', 'delay'='5s') */ t1.a, t2.b
+        |FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
+  def testEarlyFireUnsupportedTarget(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE('target'='window_join', 'delay'='5s') */ t1.a, t2.b
+        |FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .hasMessageContaining("target value 'window_join' is not supported")
+  }
+
+  @Test
   def testEarlyFireMissingDelay(): Unit = {
     val sqlQuery =
       """
