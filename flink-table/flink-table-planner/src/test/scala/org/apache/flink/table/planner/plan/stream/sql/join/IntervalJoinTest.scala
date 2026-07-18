@@ -397,6 +397,19 @@ class IntervalJoinTest extends TableTestBase {
 
   // Tests for the EARLY_FIRE join hint
   @Test
+  def testEarlyFireOnRowTimeLeftOuterJoin(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE('delay'='5s') */ t1.a, t2.b
+        |FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
   def testEarlyFireMissingDelay(): Unit = {
     val sqlQuery =
       """
@@ -491,6 +504,34 @@ class IntervalJoinTest extends TableTestBase {
       """.stripMargin
 
     util.verifyExecPlan(sqlQuery)
+  }
+
+  @Test
+  def testEarlyFireRowTimeOnProcTimeJoin(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE('delay'='5s', 'time-mode'='rowtime') */ t1.a, t2.b
+        |FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.proctime BETWEEN t2.proctime - INTERVAL '1' HOUR AND t2.proctime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .hasStackTraceContaining("requires a row-time interval join")
+  }
+
+  @Test
+  def testEarlyFireProcTimeOnRowTimeJoin(): Unit = {
+    val sqlQuery =
+      """
+        |SELECT /*+ EARLY_FIRE('delay'='5s', 'time-mode'='proctime') */ t1.a, t2.b
+        |FROM MyTable t1 LEFT OUTER JOIN MyTable2 t2 ON
+        |  t1.a = t2.a AND
+        |  t1.rowtime BETWEEN t2.rowtime - INTERVAL '10' SECOND AND t2.rowtime + INTERVAL '1' HOUR
+      """.stripMargin
+
+    assertThatThrownBy(() => util.verifyExecPlan(sqlQuery))
+      .hasStackTraceContaining("not yet supported")
   }
 
   // Other tests
