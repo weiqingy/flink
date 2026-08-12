@@ -237,13 +237,13 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL (planner 
 ## 7. Evangelism (talks / articles / promotion)
 
 **Flink Forward conference talks (multi-year track record):**
-- **Flink Forward 2026** — "Flink Agents at LinkedIn: Early Enterprise Exploration and the Road Ahead"
-- **Flink Forward 2025** — "Powering Stateful Joins at Scale with Flink SQL at LinkedIn"
-- **Flink Forward 2023** — "Powering Stateful Applications with Managed Flink SQL Platform at LinkedIn"
-- **Flink Forward 2022** — "Building a Fully Managed Stream Processing Platform on Flink at Scale for LinkedIn"
+- **Flink Forward Asia 2026** (Shenzhen) — "Flink Agents at LinkedIn: Early Enterprise Exploration and the Road Ahead"
+- **Flink Forward Barcelona 2025** — "Powering Stateful Joins at Scale with Flink SQL at LinkedIn" ([speaker listing](https://www.flink-forward.org/barcelona-2025/speakers))
+- **Flink Forward Seattle 2023** — "Powering Stateful Applications with Managed Flink SQL Platform at LinkedIn" ([speaker listing](https://www.flink-forward.org/seattle-2023/speakers))
+- **Flink Forward San Francisco 2022** — "Building a Fully Managed Stream Processing Platform on Flink at Scale for LinkedIn" ([speaker listing](https://www.flink-forward.org/san-francisco-2022/speakers) · [slides](https://www.slideshare.net/slideshow/building-a-fully-managed-stream-processing-platform-on-flink-at-scale-for-linkedin-252866883/252866883))
 
 **Other conference talks:**
-- **Current 2025** (Confluent) — "Scaling Streaming Computation at LinkedIn: A Multi-Year Journey with Apache Flink"
+- **Current 2025** (Confluent) — "Scaling Streaming Computation at LinkedIn: A Multi-Year Journey with Apache Flink" ([session page](https://current.confluent.io/post-conference-videos-25/scaling-streaming-computation-at-linkedin-a-multi-year-journey-with-apache-flink-e-nola25))
 
 **Meetups / community organizing:**
 - Presented "Powering Stateful Joins at Scale with Flink SQL at LinkedIn" at the [*[In-Person + Online] Stream Processing with Apache Kafka, Samza, and Flink*](https://www.meetup.com/stream-processing-meetup-linkedin/events/312902886/) meetup (2026-02-03)
