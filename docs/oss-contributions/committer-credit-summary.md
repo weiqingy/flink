@@ -149,22 +149,18 @@ Representative in-depth Flink reviews (with iteration):
 Cross-project reviews: [flink-web #863](https://github.com/apache/flink-web/pull/863) (Flink Agents 0.3.0 announcement);
 [flink-agents #867](https://github.com/apache/flink-agents/pull/867) (PyFlink gateway fallback removal — a missing regression test and a Java/Python parity gap, both fixed).
 
-### Design reviews on flink-agents Discussions
+**Design reviews on flink-agents Discussions — 8 threads from 7 authors**, 6 carried through to the PR implementing them:
 
-Beyond code PRs, I am a standing reviewer on flink-agents **design Discussions** — **8 design threads from 7 different authors**, and I carry each review through to the PR that implements it:
-
-| Discussion | Topic (author) | My review comments | Implementation PR — my reviews |
-|---|---|---|---|
-| [#855](https://github.com/apache/flink-agents/discussions/855) | Parallel Tool Call Execution (`da-daken`) | 6 | [#926](https://github.com/apache/flink-agents/pull/926) — 11 |
-| [#901](https://github.com/apache/flink-agents/discussions/901) | Built-in Operational Metrics (`joeyutong`) | 3 | [#955](https://github.com/apache/flink-agents/pull/955) — in flight |
-| [#900](https://github.com/apache/flink-agents/discussions/900) | Recording Agent Traces (`joeyutong`) | 2 | [#924](https://github.com/apache/flink-agents/pull/924) — 7 |
-| [#909](https://github.com/apache/flink-agents/discussions/909) | Sub-agent Resource framework (`pltbkd`) | 2 | [#938](https://github.com/apache/flink-agents/pull/938) — 3 |
-| [#710](https://github.com/apache/flink-agents/discussions/710) | Agent observability: tracing & evaluation (`addu390`) | 2 | [#923](https://github.com/apache/flink-agents/pull/923) — 4 |
-| [#897](https://github.com/apache/flink-agents/discussions/897) | Pluggable model routing (`purushah`) | 2 | [#964](https://github.com/apache/flink-agents/pull/964) — 1 |
-| [#929](https://github.com/apache/flink-agents/discussions/929) | OpenTelemetry GenAI export (`Zhuoxi2000`) | 2 | — |
-| [#862](https://github.com/apache/flink-agents/discussions/862) | Planning Flink Agents 0.4 (`wenjin272`) | 1 | — |
-
-**20 design-review comments across the 8 threads, plus 26 review submissions on the 5 implementation PRs.** #855 is the deepest: six rounds from first review to sign-off, then eleven review submissions on #926 including a blocking correctness finding that CI bisection traced to a specific JDK.
+| Discussion | Topic | Implementation PR |
+|---|---|---|
+| [#855](https://github.com/apache/flink-agents/discussions/855) | Parallel Tool Call Execution | [#926](https://github.com/apache/flink-agents/pull/926) |
+| [#901](https://github.com/apache/flink-agents/discussions/901) | Built-in Operational Metrics | [#955](https://github.com/apache/flink-agents/pull/955) |
+| [#900](https://github.com/apache/flink-agents/discussions/900) | Recording Agent Traces | [#924](https://github.com/apache/flink-agents/pull/924) |
+| [#909](https://github.com/apache/flink-agents/discussions/909) | Sub-agent Resource framework | [#938](https://github.com/apache/flink-agents/pull/938) |
+| [#710](https://github.com/apache/flink-agents/discussions/710) | Agent observability: tracing & evaluation | [#923](https://github.com/apache/flink-agents/pull/923) |
+| [#897](https://github.com/apache/flink-agents/discussions/897) | Pluggable model routing | [#964](https://github.com/apache/flink-agents/pull/964) |
+| [#929](https://github.com/apache/flink-agents/discussions/929) | OpenTelemetry GenAI export | — |
+| [#862](https://github.com/apache/flink-agents/discussions/862) | Planning Flink Agents 0.4 | — |
 
 ---
 
