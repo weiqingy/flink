@@ -9,7 +9,7 @@ _GitHub handle: `weiqingy` · JIRA handle: `WeiqingYang` · email: yangweiqing00
 > - Apache **Spark / Samza** close merged PRs via the `asfgit` merge bot (commit-based, not GitHub merge button), so GitHub marks them "closed" even when landed. For those projects the reliable "landed" metric is JIRA **resolution = Fixed**.
 > - GitHub's `reviewed-by:` counts also include review comments left on my own PRs, so §3 reports both the raw number and the number on **others'** PRs.
 
-**What changed since the 2026-07-01 snapshot:** all three authored FLIPs are now **Accepted** (FLIP-497 on 7-17, FLIP-527 on 7-24, FLIP-485 on 8-01), and the first **5 authored `apache/flink` commits merged** (7-17 through 8-10).
+**What changed since the 2026-07-01 snapshot:** I was invited as an **Apache Auron (incubating) committer** on 2026-08-07 — my first ASF committership; all three authored FLIPs are now **Accepted** (FLIP-497 on 7-17, FLIP-527 on 7-24, FLIP-485 on 8-01); and the first **5 authored `apache/flink` commits merged** (7-17 through 8-10).
 
 ---
 
@@ -23,6 +23,7 @@ _GitHub handle: `weiqingy` · JIRA handle: `WeiqingYang` · email: yangweiqing00
 | Active Flink code/review contribution | 2025 – present |
 | flink-agents contribution | 2026-01 – present |
 | First authored `apache/flink` commit merged | **2026-07-17** ([PR 28717](https://github.com/apache/flink/pull/28717), merged by Gyula Fóra / PMC) |
+| **Invited as an Apache Auron (incubating) committer** — first ASF committership, earned on the Flink-integration work | **2026-08-07** ([ANNOUNCE](https://lists.apache.org/thread/okybwtrf7nt62hv6y99c8v8rg2tsvll5)) |
 
 **Framing:** Flink user since 2021 (K8s Operator PoC, FLIP-212 era); active Flink dev/reviewer since 2025. _(Broader Apache history — Spark/HBase/Ambari since 2016 — is covered under dimension 8.)_
 
@@ -58,12 +59,12 @@ The 9 open `apache/flink` PRs are the in-review remainder of the three accepted 
 
 | Repo | PRs | Merged/Landed | Open | Verify |
 |---|---|---|---|---|
-| **Auron** (incubating) — *Flink integration, 0→1* | 18 | **18 merged** | 0 | [all](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy&type=pullrequests) · [merged](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy+is%3Amerged&type=pullrequests) |
+| **Auron** (incubating) — *Flink integration, 0→1; **committer since 2026-08-07*** | 18 | **18 merged** | 0 | [all](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy&type=pullrequests) · [merged](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy+is%3Amerged&type=pullrequests) |
 | spark | 32 | 13+ Fixed (JIRA) | 0 | [all](https://github.com/search?q=repo%3Aapache%2Fspark+is%3Apr+author%3Aweiqingy&type=pullrequests) |
 | samza | 13 | 2+ | 1 | [all](https://github.com/search?q=repo%3Aapache%2Fsamza+is%3Apr+author%3Aweiqingy&type=pullrequests) |
 | livy | 1 | — | — | [all](https://github.com/search?q=repo%3Aapache%2Flivy+is%3Apr+author%3Aweiqingy&type=pullrequests) |
 
-> **Auron** is where I built **Flink integration from 0→1** as **one of two key drivers** for the Auron native execution engine (tracking issue: [apache/auron#1264](https://github.com/apache/auron/issues/1264)). Contribution size: **18 merged PRs, +13,250 / −381 lines of code** (10+ features, design + PRs).
+> **Auron** is where I built **Flink integration from 0→1** as **one of two key drivers** for the Auron native execution engine (tracking issue: [apache/auron#1264](https://github.com/apache/auron/issues/1264)). Contribution size: **18 merged PRs, +13,250 / −381 lines of code** (10+ features, design + PRs). This work is what earned the **Auron committership** (2026-08-07) — see §8.
 
 > **flink-connector-jdbc** work was release-engineering support, not feature work: [#203](https://github.com/apache/flink-connector-jdbc/pull/203) unblocked the **v3.4.0 release** (CI could no longer download the aged-off Flink 1.20.0 test binary), and [#205](https://github.com/apache/flink-connector-jdbc/pull/205)/[#206](https://github.com/apache/flink-connector-jdbc/pull/206)/[#207](https://github.com/apache/flink-connector-jdbc/pull/207) fixed missing ASF license headers I found while verifying the RC source releases — landed on master, `v4.1` and `v3.4` without requiring a new RC.
 
@@ -196,7 +197,14 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL (planner 
 - **Ticket triage:** diagnosed the flaky `TaskExecutorPartitionLifecycleTest` fork crash in [FLINK-39947](https://issues.apache.org/jira/browse/FLINK-39947) as an environmental one-off (assigned victim, not culprit) so the report wouldn't send others chasing a phantom bug
 - **Community citizenship:** welcomed 13+ new committers / PMC members on dev@
 - **JIRA:** 84 issues reported across 7 projects (see §2)
-- **flink-agents:** self-initiated [Discussion #660](https://github.com/apache/flink-agents/discussions/660) (multi-agent orchestration)
+- **flink-agents:** self-initiated [Discussion #660](https://github.com/apache/flink-agents/discussions/660) (multi-agent orchestration) and [Discussion #552](https://github.com/apache/flink-agents/discussions/552) (per-event-type log levels, which I then implemented)
+
+**dev@auron — 9 posts across 9 threads** ([archive search](https://lists.apache.org/list?dev@auron.apache.org:lte=24M:Weiqing%20Yang)). Included here because podling governance participation is the same kind of work, just on a different list:
+
+- **Release votes:** [Auron v8.0.0-rc0](https://lists.apache.org/thread/hv07l20y3zs6jw75cs4z8n7sok8tb7xy) (2026-07-09) · [v8.0.0-incubating release planning](https://lists.apache.org/thread/yqysxy7cp22p9dlvoh0ko44782yk22no) (2026-06-16)
+- **Design vote:** [AIP-4: GPU Acceleration for Apache Auron](https://lists.apache.org/thread/lsfbtg4pj40yvcgg6k5dzd1sovwgjdgy) (2026-06-08)
+- **Project governance:** [[DISCUSS] Graduate Apache Auron (Incubating) as a Top-Level Project](https://lists.apache.org/thread/6g5s4n09chp8s9kjlfgl94bk5072fkry) (2026-08-05)
+- **Community citizenship:** welcomed new Auron committers and PPMC members on-list
 
 ---
 
@@ -233,8 +241,13 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL (planner 
 
 ## 8. Other Apache projects (contributions / committer / PMC)
 
+**Apache Auron (incubating) — committer since 2026-08-07** ([ANNOUNCE on dev@auron](https://lists.apache.org/thread/okybwtrf7nt62hv6y99c8v8rg2tsvll5); roster: ASF availid `weiqing`, listed in the [Auron committer group](https://people.apache.org/phonebook.html?ppmc=auron)).
+This is my first ASF committership, and it was earned on exactly the kind of work this nomination is about: designing and building
+Auron's **Flink integration from 0→1** (§2 and §4), plus 35 reviews on other contributors' PRs and sustained participation in the
+podling's release votes, design votes (AIP-4), and TLP graduation discussion (§5). Not on the PPMC.
+
 Contributor across **7 Apache projects**: Spark, Samza, Ambari, HBase, Hadoop, Livy, and Auron (incubating),
-in addition to Flink & flink-agents. **No committer/PMC roles held yet.**
+in addition to Flink & flink-agents. **No Flink committer/PMC role yet** — that is what this nomination is for.
 
 Representative external work: the **Spark-HBase Connector (SHC)** — [hortonworks-spark/shc](https://github.com/hortonworks-spark/shc/graphs/contributors?all=1),
 an OSS project I contributed to that was later **merged into the Apache HBase community** (HBASE module — 6 Fixed JIRA,
