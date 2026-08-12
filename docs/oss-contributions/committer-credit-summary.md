@@ -19,7 +19,7 @@ _GitHub handle: `weiqingy` · JIRA handle: `WeiqingYang` · email: yangweiqing00
 |---|---|
 | First Flink user@ mailing-list post ("High availability data clean up"), while building LinkedIn's internal Flink K8s Operator PoC | **2021-10-20** |
 | FLIP-212 (Flink Kubernetes Operator) — team-wise exchange + offline discussion with Gyula / Thomas / Wang Yang | 2022 |
-| First Flink dev@ discussion thread — start of contributor-style activity | 2024-12 ([thread](https://lists.apache.org/thread/p3w90rprdtv3vyjog3vl0rql5fvm703j)) |
+| First Flink dev@ *technical* discussion thread — start of contributor-style activity (a 2022 dev@ post predates it, congratulating a new PMC member) | 2024-12 ([thread](https://lists.apache.org/thread/p3w90rprdtv3vyjog3vl0rql5fvm703j)) |
 | Active Flink code/review contribution | 2025 – present |
 | flink-agents contribution | 2026-01 – present |
 | First authored `apache/flink` commit merged | **2026-07-17** ([PR 28717](https://github.com/apache/flink/pull/28717), merged by Gyula Fóra / PMC) |
@@ -31,7 +31,7 @@ _GitHub handle: `weiqingy` · JIRA handle: `WeiqingYang` · email: yangweiqing00
 
 ## 2. Code contribution volume
 
-### GitHub PRs authored — **157 total across 7 Apache repos**
+### GitHub PRs authored — **157 total across 7 Apache GitHub repos**
 
 All authored PRs: <https://github.com/search?q=is%3Apr+author%3Aweiqingy+org%3Aapache&type=pullrequests>
 
@@ -53,7 +53,7 @@ The five merged `apache/flink` commits (all landed 2026-07-17 → 2026-08-10, me
 | [28827](https://github.com/apache/flink/pull/28827) | FLINK-40169 | Add `target` option to the `EARLY_FIRE` hint | 2026-08-08 |
 | [28877](https://github.com/apache/flink/pull/28877) | FLINK-40170 | Infer update-producing changelog mode for early-fire interval join | 2026-08-10 |
 
-The 9 open `apache/flink` PRs are the in-review remainder of the three accepted FLIPs (FLIP-497 stack FLINK-40171/40172, FLIP-485 stack FLINK-40292…40295, FLIP-527 stack FLINK-40296/40297) plus FLINK-38477 and FLINK-38242.
+The 9 open `apache/flink` PRs are the remainder of the three accepted FLIPs, plus FLINK-38477 and FLINK-38242. Each FLIP ships as a stack of one-commit PRs: the head PR is under review and the next is a stacked draft that opens once the one in front merges. Currently under review: [28878](https://github.com/apache/flink/pull/28878) (FLIP-485), [28880](https://github.com/apache/flink/pull/28880) (FLIP-527), [28952](https://github.com/apache/flink/pull/28952) (FLIP-497), plus [27083](https://github.com/apache/flink/pull/27083) and [26903](https://github.com/apache/flink/pull/26903). Stacked drafts behind them: 28879, 28881, 28953. [#28678](https://github.com/apache/flink/pull/28678) is the superseded FLIP-527 draft, kept open only until its replacement stack lands.
 
 **Other OSS projects:**
 
@@ -61,7 +61,7 @@ The 9 open `apache/flink` PRs are the in-review remainder of the three accepted 
 |---|---|---|---|---|
 | **Auron** (incubating) — *Flink integration, 0→1; **committer since 2026-08-07*** | 18 | **18 merged** | 0 | [all](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy&type=pullrequests) · [merged](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+author%3Aweiqingy+is%3Amerged&type=pullrequests) |
 | spark | 32 | 13+ Fixed (JIRA) | 0 | [all](https://github.com/search?q=repo%3Aapache%2Fspark+is%3Apr+author%3Aweiqingy&type=pullrequests) |
-| samza | 13 | 2+ | 1 | [all](https://github.com/search?q=repo%3Aapache%2Fsamza+is%3Apr+author%3Aweiqingy&type=pullrequests) |
+| samza | 13 | 7 Fixed (JIRA, reported) | 1 | [all](https://github.com/search?q=repo%3Aapache%2Fsamza+is%3Apr+author%3Aweiqingy&type=pullrequests) |
 | livy | 1 | — | — | [all](https://github.com/search?q=repo%3Aapache%2Flivy+is%3Apr+author%3Aweiqingy&type=pullrequests) |
 
 > **Auron** is where I built **Flink integration from 0→1** as **one of two key drivers** for the Auron native execution engine (tracking issue: [apache/auron#1264](https://github.com/apache/auron/issues/1264)). Contribution size: **18 merged PRs, +13,250 / −381 lines of code** (10+ features, design + PRs). This work is what earned the **Auron committership** (2026-08-07) — see §8.
@@ -81,7 +81,7 @@ All JIRA assigned & Fixed: <https://issues.apache.org/jira/issues/?jql=assignee%
 |---|---|---|---|---|
 | FLINK | 24 | 6 | 5 | [jql](https://issues.apache.org/jira/issues/?jql=reporter%3DWeiqingYang%20AND%20project%3DFLINK) |
 
-_The FLINK count grew from 6 to 24 because each accepted FLIP was decomposed into per-commit sub-tasks (FLINK-40167…40174 for FLIP-497, FLINK-40292…40295 for FLIP-485, FLINK-40296…40299 for FLIP-527)._
+_The FLINK count grew from 6 to 24 because each accepted FLIP was decomposed into per-commit sub-tasks (FLINK-40167…40174 for FLIP-497, FLINK-40292…40295 for FLIP-485, FLINK-40296…40299 for FLIP-527), plus FLINK-40120 and FLINK-40122._
 
 **Incubating projects (GitHub Issues — no JIRA):**
 
@@ -101,7 +101,7 @@ _The FLINK count grew from 6 to 24 because each accepted FLIP was decomposed int
 | LIVY | 1 | 1 | 1 | [jql](https://issues.apache.org/jira/issues/?jql=reporter%3DWeiqingYang%20AND%20project%3DLIVY) |
 | HADOOP | 1 | 1 | 1 | [jql](https://issues.apache.org/jira/issues/?jql=reporter%3DWeiqingYang%20AND%20project%3DHADOOP) |
 
-**Best-looking headline numbers:** ~**157 PRs**, ~**84 JIRA + 48 GitHub Issues**, ~**87 merged PRs in the Flink ecosystem** (flink-agents 60 + Auron 18 + flink 5 + flink-connector-jdbc 4), plus **35 Fixed JIRA** across Apache projects.
+**Best-looking headline numbers:** ~**157 PRs**, ~**84 JIRA + 48 GitHub Issues**, ~**87 merged PRs across Flink and its ecosystem, plus Auron's Flink integration** (flink-agents 60 + Auron 18 + flink 5 + flink-connector-jdbc 4), plus **35 Fixed JIRA** across Apache projects.
 
 ---
 
@@ -129,6 +129,7 @@ By repo (reviews):
 | Auron *(Flink integration)* | 45 | 35 | [search](https://github.com/search?q=repo%3Aapache%2Fauron+is%3Apr+reviewed-by%3Aweiqingy&type=pullrequests) |
 | samza | 24 | 19 | [search](https://github.com/search?q=repo%3Aapache%2Fsamza+is%3Apr+reviewed-by%3Aweiqingy&type=pullrequests) |
 | spark | 12 | 1 | [search](https://github.com/search?q=repo%3Aapache%2Fspark+is%3Apr+reviewed-by%3Aweiqingy&type=pullrequests) |
+| livy | 1 | 0 | [search](https://github.com/search?q=repo%3Aapache%2Flivy+is%3Apr+reviewed-by%3Aweiqingy&type=pullrequests) |
 
 Representative in-depth Flink reviews (with iteration):
 [FLINK-37240 / PR 28074](https://github.com/apache/flink/pull/28074),
@@ -142,9 +143,9 @@ Representative in-depth Flink reviews (with iteration):
 [hotfix / 28954](https://github.com/apache/flink/pull/28954) (checkpoint channel-state refactor — review requested directly by the author).
 
 Cross-project reviews: [flink-web #863](https://github.com/apache/flink-web/pull/863) (Flink Agents 0.3.0 announcement);
-[flink-agents #855](https://github.com/apache/flink-agents/pull/855) (design review of Parallel Tool Call Execution — 4 code-grounded findings);
 [flink-agents #867](https://github.com/apache/flink-agents/pull/867) (PyFlink gateway fallback removal — a missing regression test and a Java/Python parity gap, both fixed).
-On flink-agents I also **review design Discussions** (GitHub Discussions design proposals), not just code PRs.
+
+On flink-agents I also **review design Discussions**, not just code PRs, and I carry a review through from design to the code that implements it. [Discussion #855](https://github.com/apache/flink-agents/discussions/855) (Parallel Tool Call Execution) took six review rounds from first pass to sign-off; I then reviewed its implementation PR [#926](https://github.com/apache/flink-agents/pull/926) across four more rounds (11 review submissions to date), including a blocking correctness finding that CI bisection traced to a specific JDK.
 
 ---
 
@@ -154,21 +155,21 @@ On flink-agents I also **review design Discussions** (GitHub Discussions design 
 
 **FLIPs authored / led — contributing LinkedIn's internal features and use cases back to the Flink community. All three are now Accepted:**
 
-- **FLIP-497 — Early Fire Support for Flink SQL Interval Join** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-497%3A+Early+Fire+Support+for+Flink+SQL+Interval+Join) · [FLINK-36953](https://issues.apache.org/jira/browse/FLINK-36953)): **ACCEPTED 2026-07-17** — 3 binding +1 (Yuepeng Pan, Xingcan Cui, Xuyang), 0 −1. Implementation is an 8-PR stack (FLINK-40167…40174); **4 merged** ([28353](https://github.com/apache/flink/pull/28353), [28796](https://github.com/apache/flink/pull/28796), [28827](https://github.com/apache/flink/pull/28827), [28877](https://github.com/apache/flink/pull/28877)), [28952](https://github.com/apache/flink/pull/28952) in review.
+- **FLIP-497 — Early Fire Support for Flink SQL Interval Join** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-497%3A+Early+Fire+Support+for+Flink+SQL+Interval+Join) · [FLINK-36953](https://issues.apache.org/jira/browse/FLINK-36953)): **ACCEPTED 2026-07-17** — 3 binding +1 (Yuepeng Pan, Xingcan Cui, Xuyang), 0 −1. Implementation is an 8-PR stack (FLINK-40167…40174); **4 of 8 merged** ([28353](https://github.com/apache/flink/pull/28353), [28796](https://github.com/apache/flink/pull/28796), [28827](https://github.com/apache/flink/pull/28827), [28877](https://github.com/apache/flink/pull/28877)); [28952](https://github.com/apache/flink/pull/28952) under review, [28953](https://github.com/apache/flink/pull/28953) stacked behind it.
   _Refs: [restarted DISCUSS](https://lists.apache.org/thread/go3vq64opsltz7xp7of0tq6ln5fpbfls) · [VOTE](https://lists.apache.org/thread/l94cocs2z00c1tkkfmbhm51b87vbsgcp) · [RESULT](https://lists.apache.org/thread/bf4sl9lzshgj4g1nl6hxmhor4cnvsp18)._
-- **FLIP-527 — State Schema Evolution for RowData** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-527%3A+State+Schema+Evolution+for+RowData) · [FLINK-37732](https://issues.apache.org/jira/browse/FLINK-37732)): **ACCEPTED 2026-07-24** — 4 binding +1 (Gyula Fóra/PMC, Shengkai Fang, Leonard Xu/PMC, Zakelly Lan/PMC), 0 −1. Already rolled out to production at LinkedIn. Shared infrastructure ([FLINK-40120](https://issues.apache.org/jira/browse/FLINK-40120)) merged 7-17; implementation stack ([28880](https://github.com/apache/flink/pull/28880), [28881](https://github.com/apache/flink/pull/28881)) in review.
+- **FLIP-527 — State Schema Evolution for RowData** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-527%3A+State+Schema+Evolution+for+RowData) · [FLINK-37732](https://issues.apache.org/jira/browse/FLINK-37732)): **ACCEPTED 2026-07-24** — 4 binding +1 (Gyula Fóra/PMC, Shengkai Fang, Leonard Xu/PMC, Zakelly Lan/PMC), 0 −1. Already rolled out to production at LinkedIn. Shared infrastructure ([FLINK-40120](https://issues.apache.org/jira/browse/FLINK-40120)) merged 7-17; implementation is a 5-PR stack — [28880](https://github.com/apache/flink/pull/28880) under review, [28881](https://github.com/apache/flink/pull/28881) stacked behind it (the earlier [#28678](https://github.com/apache/flink/pull/28678) draft was superseded when the design settled on the opt-in flag approach).
   _Refs: [DISCUSS](https://lists.apache.org/thread/kmljnfhnjc863cngs7mqgwhsnq0js8r3) · [VOTE](https://lists.apache.org/thread/5pxzlry1hblddz0qhzbm1qml4yyjy1wn) · [RESULT](https://lists.apache.org/thread/fq3wfr0tgb5g1n6yso2hvc51dxwg1b1y)._
-- **FLIP-485 — Add UDF Metrics** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-485%3A+Add+UDF+Metrics) · [FLINK-38071](https://issues.apache.org/jira/browse/FLINK-38071)): **ACCEPTED 2026-08-01** — 3 binding +1 (Xuyang, Yuepeng Pan, Peter Huang) + 1 non-binding, 0 −1. Opt-in UDF-level observability metrics; implementation split into 4 PRs (FLINK-40292…40295), [28878](https://github.com/apache/flink/pull/28878) in review.
+- **FLIP-485 — Add UDF Metrics** ([wiki](https://cwiki.apache.org/confluence/display/FLINK/FLIP-485%3A+Add+UDF+Metrics) · [FLINK-38071](https://issues.apache.org/jira/browse/FLINK-38071)): **ACCEPTED 2026-08-01** — 3 binding +1 (Xuyang, Yuepeng Pan, Peter Huang) + 1 non-binding, 0 −1. Opt-in UDF-level observability metrics; implementation split into 4 sub-tasks (FLINK-40292…40295); [28878](https://github.com/apache/flink/pull/28878) under review (two review rounds answered), [28879](https://github.com/apache/flink/pull/28879) stacked behind it.
   _Refs: [DISCUSS](https://lists.apache.org/thread/nrsmhbn03zoq1jbth3xb0hgyr4gblzrh) · [VOTE](https://lists.apache.org/thread/symqpswsohl2s5wmtkcw0jjp1w5dot0n) · [RESULT](https://lists.apache.org/thread/g14hzzf471dn7mn7x0sfjmyynynscbqv)._
 - **FLINK-38477 — FINISHED watermark status** ([FLINK-38477](https://issues.apache.org/jira/browse/FLINK-38477) · [PR 27083](https://github.com/apache/flink/pull/27083)): under community review, with a **community request to expand it into a FLIP**. Deployed to LinkedIn production; fixed a SEV2 production incident.
 
 - **Other Flink work:** [FLINK-40120](https://issues.apache.org/jira/browse/FLINK-40120) — persist RowData field names in `RowDataSerializerSnapshot` ([PR 28717](https://github.com/apache/flink/pull/28717), **merged**). This one came out of reviewing someone else's design: while reviewing **FLIP-599 (State Catalog)** I found that the catalog proposal and FLIP-527 both needed the same serializer-snapshot change, proposed decoupling it, filed the ticket, and implemented it as shared infrastructure for both. Also [FLINK-38242](https://issues.apache.org/jira/browse/FLINK-38242) SQL/Table state-upgrade docs ([PR 26903](https://github.com/apache/flink/pull/26903)).
 
-### flink-agents (Project Collaborator; 73 PRs / 60 merged, ~85 reviews)
+### flink-agents (Project Collaborator; 73 PRs / 60 merged, 85 reviews / 64 on others' PRs)
 
-Deep runtime & durability engineering, observability / CI / logging. Contributed to Discussions (e.g. [Discussion #66](https://github.com/apache/flink-agents/discussions/66)) and gave feedback on [#855 Parallel Tool Call Execution](https://github.com/apache/flink-agents/pull/855) —
-  - Checkpoint durability / thread-safety: [#509](https://github.com/apache/flink-agents/pull/509) Python awaitable lost during checkpoint restore; [#665](https://github.com/apache/flink-agents/pull/665) stop leaking checkpoint entries on aborted checkpoints; [#666](https://github.com/apache/flink-agents/pull/666)/[#667](https://github.com/apache/flink-agents/pull/667)/[#828](https://github.com/apache/flink-agents/pull/828)/[#839](https://github.com/apache/flink-agents/pull/839) null-store invariants & checkpoint-stable memory contract; [#727](https://github.com/apache/flink-agents/pull/727) thread-safe AgentPlan; [#874](https://github.com/apache/flink-agents/pull/874) binary serde for memory updates via a versioned Kryo envelope
-  - Architecture (drove design + implementation): [#546](https://github.com/apache/flink-agents/pull/546)/[#548](https://github.com/apache/flink-agents/pull/548) decompose the 1,131-line ActionExecutionOperator "god class" into 5 focused managers and split ResourceCache / PythonResourceBridge out of AgentPlan; [#882](https://github.com/apache/flink-agents/pull/882) remove the Python local execution path (with [#881](https://github.com/apache/flink-agents/pull/881) backfilling remote coverage first)
+Deep runtime & durability engineering, observability / CI / logging, and contributor-facing project infrastructure. The authored work below is grouped by theme; the design-review and Discussion-review side of this project is in §3.
+  - Checkpoint durability / thread-safety: [#509](https://github.com/apache/flink-agents/pull/509) Python awaitable lost during checkpoint restore; [#667](https://github.com/apache/flink-agents/pull/667) stop leaking checkpoint entries on aborted checkpoints; [#666](https://github.com/apache/flink-agents/pull/666)/[#828](https://github.com/apache/flink-agents/pull/828)/[#839](https://github.com/apache/flink-agents/pull/839) null-store invariants & checkpoint-stable memory contract; [#874](https://github.com/apache/flink-agents/pull/874) binary serde for memory updates via a versioned Kryo envelope
+  - Architecture (drove design + implementation): [#546](https://github.com/apache/flink-agents/pull/546)/[#548](https://github.com/apache/flink-agents/pull/548) decompose the 1,131-line ActionExecutionOperator "god class" into 5 focused managers and split ResourceCache / PythonResourceBridge out of AgentPlan; [#882](https://github.com/apache/flink-agents/pull/882) remove the Python local execution path (with [#881](https://github.com/apache/flink-agents/pull/881) backfilling remote coverage first); [#727](https://github.com/apache/flink-agents/pull/727) backports the AgentPlan thread-safety fix to release-0.2
   - API layer: [#685](https://github.com/apache/flink-agents/pull/685) model spec in ChatModelSetup, [#698](https://github.com/apache/flink-agents/pull/698) separate prompt args from message extra_args, [#720](https://github.com/apache/flink-agents/pull/720) rename chat() arg → modelParams, [#843](https://github.com/apache/flink-agents/pull/843) explicit output schema on the chat path
   - Structured output across providers: [#919](https://github.com/apache/flink-agents/pull/919) OpenAI native structured output, [#930](https://github.com/apache/flink-agents/pull/930) the same for Azure OpenAI (Java + Python), [#952](https://github.com/apache/flink-agents/pull/952) preserve provider refusals in the Python message converter
   - Reliability fixes: [#948](https://github.com/apache/flink-agents/pull/948) close the Kafka consumer when the producer fails to close, [#951](https://github.com/apache/flink-agents/pull/951) release skill repositories on any load failure, [#974](https://github.com/apache/flink-agents/pull/974) aggregate close failures across the Exception/Error boundary
@@ -196,7 +197,7 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL (planner 
 - **Governance:** participated in the [[DISCUSSION] FLIP Process — handling similar / dormant FLIPs](https://lists.apache.org/thread/4pzj8vyx1rpwz2zvlvz205cj8pynxkry) thread (2025-07)
 - **Ticket triage:** diagnosed the flaky `TaskExecutorPartitionLifecycleTest` fork crash in [FLINK-39947](https://issues.apache.org/jira/browse/FLINK-39947) as an environmental one-off (assigned victim, not culprit) so the report wouldn't send others chasing a phantom bug
 - **Community citizenship:** welcomed 13+ new committers / PMC members on dev@
-- **JIRA:** 84 issues reported across 7 projects (see §2)
+- **JIRA:** 84 issues reported across 7 JIRA projects (see §2)
 - **flink-agents:** self-initiated [Discussion #660](https://github.com/apache/flink-agents/discussions/660) (multi-agent orchestration) and [Discussion #552](https://github.com/apache/flink-agents/discussions/552) (per-event-type log levels, which I then implemented)
 
 **dev@auron — 9 posts across 9 threads** ([archive search](https://lists.apache.org/list?dev@auron.apache.org:lte=24M:Weiqing%20Yang)). Included here because podling governance participation is the same kind of work, just on a different list:
@@ -235,7 +236,7 @@ flink-agents runtime/python/api/integrations; flink runtime, table/SQL (planner 
 - Encourage & organize team members to speak at industry events (Flink Forward Asia / Flink Talks 2026)
 
 **Recognition:**
-- **Data Streaming Awards 2025** — LinkedIn awarded *Enterprise-Scale & Contribution Award* ([Confluent announcement](https://current.confluent.io/data-streaming-awards-winners/linkedin2025))
+- **Data Streaming Awards 2025** — LinkedIn awarded *Enterprise-Scale and Contribution 2025* ([Confluent announcement](https://current.confluent.io/data-streaming-awards-winners/linkedin2025))
 
 ---
 
@@ -246,7 +247,7 @@ This is my first ASF committership, and it was earned on exactly the kind of wor
 Auron's **Flink integration from 0→1** (§2 and §4), plus 35 reviews on other contributors' PRs and sustained participation in the
 podling's release votes, design votes (AIP-4), and TLP graduation discussion (§5). Not on the PPMC.
 
-Contributor across **7 Apache projects**: Spark, Samza, Ambari, HBase, Hadoop, Livy, and Auron (incubating),
+Contributor across **7 other Apache projects**: Spark, Samza, Ambari, HBase, Hadoop, Livy, and Auron (incubating),
 in addition to Flink & flink-agents. **No Flink committer/PMC role yet** — that is what this nomination is for.
 
 Representative external work: the **Spark-HBase Connector (SHC)** — [hortonworks-spark/shc](https://github.com/hortonworks-spark/shc/graphs/contributors?all=1),
