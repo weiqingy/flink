@@ -1,6 +1,6 @@
 # Committer Nomination — Contribution Credit Summary
 
-_Prepared for Xintong's review. Data pulled 2026-08-12._
+_Data pulled 2026-08-12._
 _GitHub handle: `weiqingy` · JIRA handle: `WeiqingYang` · email: yangweiqing001@gmail.com_
 
 > Metric caveats:
