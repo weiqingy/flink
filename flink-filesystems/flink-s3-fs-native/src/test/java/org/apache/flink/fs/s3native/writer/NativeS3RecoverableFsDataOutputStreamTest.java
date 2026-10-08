@@ -24,11 +24,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,20 +48,20 @@ class NativeS3RecoverableFsDataOutputStreamTest {
 
     @TempDir Path tmp;
 
-    InMemoryNativeS3Operations s3;
+    FakeNativeS3Operations s3;
     String uploadId;
     NativeS3RecoverableFsDataOutputStream stream;
 
     @BeforeEach
     void setUp() throws IOException {
-        s3 = new InMemoryNativeS3Operations();
+        s3 = new FakeNativeS3Operations();
         uploadId = s3.startMultiPartUpload(KEY);
         stream = newStream(s3, uploadId);
         stream.write(bytes('A', 5), 0, 5); // < MIN_PART_SIZE, so it is uploaded during commit
     }
 
     @Test
-    void closeForCommitAbortsMultipartUploadWhenPartUploadFails() throws Exception {
+    void closeForCommitKeepsMultipartUploadWhenPartUploadFails() throws Exception {
         s3.failUploadPart = true;
 
         assertThatThrownBy(stream::closeForCommit)
@@ -62,56 +69,19 @@ class NativeS3RecoverableFsDataOutputStreamTest {
                 .hasMessageContaining("injected uploadPart failure");
 
         assertThat(s3.abortAttempts)
-                .as("closeForCommit must abort the upload on failure")
-                .isEqualTo(1);
-        assertThat(s3.openMultipartUploads)
-                .as("the multipart upload must not leak after a failed commit")
-                .doesNotContainKey(uploadId);
+                .as("closeForCommit must not abort the upload, a snapshot may reference it")
+                .isZero();
+        assertThat(s3.openMultipartUploads).containsKey(uploadId);
         assertThat(countLocalFilesIn(tmp)).as("the local temp file must be cleaned up").isZero();
     }
 
+    /** An abnormal {@code close()} releases local state but keeps the upload. */
     @Test
-    void closeForCommitSurfacesAbortFailureWhenBothUploadAndAbortFail() throws Exception {
-        s3.failUploadPart = true;
-        s3.failAbortMultiPartUpload = true;
-
-        assertThatThrownBy(stream::closeForCommit)
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("injected uploadPart failure")
-                .satisfies(
-                        t ->
-                                assertThat(t.getSuppressed())
-                                        .as("the abort failure must be surfaced, not swallowed")
-                                        .anySatisfy(
-                                                s ->
-                                                        assertThat(s)
-                                                                .hasMessageContaining(
-                                                                        "injected abort failure")));
-
-        assertThat(s3.abortAttempts).isEqualTo(1);
-    }
-
-    @Test
-    void closeSurfacesAbortFailureInsteadOfSwallowingIt() throws Exception {
-        s3.failAbortMultiPartUpload = true;
-
-        assertThatThrownBy(stream::close)
-                .isInstanceOf(IOException.class)
-                .hasMessageContaining("injected abort failure");
-
-        assertThat(s3.abortAttempts).isEqualTo(1);
-        assertThat(countLocalFilesIn(tmp))
-                .as("local resources are still released even when the abort fails")
-                .isZero();
-    }
-
-    /** An abnormal {@code close()} aborts the upload and releases local state. */
-    @Test
-    void closeAbortsMultipartUploadOnAbnormalClose() throws Exception {
+    void closeKeepsMultipartUploadOnAbnormalClose() throws Exception {
         stream.close();
 
-        assertThat(s3.abortAttempts).isEqualTo(1);
-        assertThat(s3.openMultipartUploads).doesNotContainKey(uploadId);
+        assertThat(s3.abortAttempts).isZero();
+        assertThat(s3.openMultipartUploads).containsKey(uploadId);
         assertThat(countLocalFilesIn(tmp)).isZero();
     }
 
@@ -123,10 +93,6 @@ class NativeS3RecoverableFsDataOutputStreamTest {
         assertThatThrownBy(failingStream::close)
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("injected temp-file delete failure");
-
-        assertThat(s3.abortAttempts)
-                .as("abort is still attempted despite delete failure")
-                .isEqualTo(1);
     }
 
     @Test
@@ -254,12 +220,11 @@ class NativeS3RecoverableFsDataOutputStreamTest {
 
         racingStream.close();
 
-        assertThat(s3.abortAttempts).isEqualTo(1);
         assertThat(countLocalFilesIn(dir)).isZero();
     }
 
-    private NativeS3RecoverableFsDataOutputStream newStream(
-            InMemoryNativeS3Operations ops, String uid) throws IOException {
+    private NativeS3RecoverableFsDataOutputStream newStream(FakeNativeS3Operations ops, String uid)
+            throws IOException {
         return new NativeS3RecoverableFsDataOutputStream(
                 ops, KEY, uid, tmp.toString(), MIN_PART_SIZE);
     }
@@ -294,5 +259,98 @@ class NativeS3RecoverableFsDataOutputStreamTest {
         byte[] b = new byte[n];
         Arrays.fill(b, (byte) c);
         return b;
+    }
+
+    /**
+     * In-memory {@link NativeS3ObjectOperations} fake with hooks to inject part-upload and abort
+     * failures, so this test can exercise {@link NativeS3RecoverableFsDataOutputStream}'s failure
+     * handling without an S3 endpoint.
+     */
+    private static final class FakeNativeS3Operations extends NativeS3ObjectOperations {
+
+        final Map<String, byte[]> committedObjects = new HashMap<>();
+        final Map<String, Map<Integer, byte[]>> openMultipartUploads = new HashMap<>();
+
+        boolean failUploadPart = false;
+        boolean deletePartFileAfterUpload = false;
+        int abortAttempts = 0;
+        int uploadPartAttempts = 0;
+
+        private final AtomicInteger uploadIdSeq = new AtomicInteger();
+
+        FakeNativeS3Operations() {
+            super(/* s3Client */ null, /* transferManager */ null, "test-bucket", false);
+        }
+
+        @Override
+        public String startMultiPartUpload(String key) {
+            String uploadId = "U" + uploadIdSeq.incrementAndGet();
+            openMultipartUploads.put(uploadId, new HashMap<>());
+            return uploadId;
+        }
+
+        @Override
+        public UploadPartResult uploadPart(
+                String key, String uploadId, int partNumber, File file, long length)
+                throws IOException {
+            uploadPartAttempts++;
+            if (failUploadPart) {
+                throw new IOException("injected uploadPart failure for uploadId: " + uploadId);
+            }
+            Map<Integer, byte[]> parts = openMultipartUploads.get(uploadId);
+            if (parts == null) {
+                throw new IOException("unknown uploadId: " + uploadId);
+            }
+            byte[] data = Files.readAllBytes(file.toPath());
+            if (data.length != length) {
+                throw new IOException(
+                        "part length mismatch: expected " + length + ", got " + data.length);
+            }
+            parts.put(partNumber, data);
+            if (deletePartFileAfterUpload) {
+                Files.delete(file.toPath());
+            }
+            return new UploadPartResult(partNumber, "etag-" + uploadId + "-" + partNumber);
+        }
+
+        @Override
+        public CompleteMultipartUploadResult commitMultiPartUpload(
+                String key, String uploadId, List<UploadPartResult> parts, long length)
+                throws IOException {
+            Map<Integer, byte[]> uploaded = openMultipartUploads.remove(uploadId);
+            if (uploaded == null) {
+                throw new IOException("unknown uploadId: " + uploadId);
+            }
+            List<Integer> ordered = new ArrayList<>(parts.size());
+            for (UploadPartResult p : parts) {
+                ordered.add(p.getPartNumber());
+            }
+            Collections.sort(ordered);
+            ByteArrayOutputStream merged = new ByteArrayOutputStream();
+            for (int n : ordered) {
+                byte[] partData = uploaded.get(n);
+                if (partData == null) {
+                    throw new IOException("missing part " + n + " for uploadId " + uploadId);
+                }
+                merged.write(partData);
+            }
+            byte[] finalBytes = merged.toByteArray();
+            if (finalBytes.length != length) {
+                throw new IOException(
+                        "committed length mismatch: expected "
+                                + length
+                                + ", got "
+                                + finalBytes.length);
+            }
+            committedObjects.put(key, finalBytes);
+            return new CompleteMultipartUploadResult(
+                    "test-bucket", key, "final-etag-" + uploadId, null);
+        }
+
+        @Override
+        public void abortMultiPartUpload(String key, String uploadId) throws IOException {
+            abortAttempts++;
+            openMultipartUploads.remove(uploadId);
+        }
     }
 }

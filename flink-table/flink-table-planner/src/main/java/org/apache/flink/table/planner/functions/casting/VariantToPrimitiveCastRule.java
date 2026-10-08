@@ -43,8 +43,7 @@ import static org.apache.flink.table.planner.functions.casting.CastRuleUtils.str
  * the kind itself is not implicit, so a decimal is not read as an integer and a {@code TIMESTAMP}
  * is not read as a {@code TIMESTAMP_LTZ}.
  *
- * <p>{@code CHARACTER_STRING} is handled by {@link VariantToStringCastRule}; {@code TIME} has no
- * variant counterpart and is unsupported.
+ * <p>{@code CHARACTER_STRING} is handled by {@link VariantToStringCastRule}.
  */
 class VariantToPrimitiveCastRule extends AbstractNullAwareCodeGeneratorCastRule<Variant, Object> {
 
@@ -73,8 +72,10 @@ class VariantToPrimitiveCastRule extends AbstractNullAwareCodeGeneratorCastRule<
             case BINARY:
             case VARBINARY:
             case DATE:
+            case TIME_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITHOUT_TIME_ZONE:
             case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+            case UUID:
                 return true;
             default:
                 return false;
@@ -174,6 +175,15 @@ class VariantToPrimitiveCastRule extends AbstractNullAwareCodeGeneratorCastRule<
                         returnVariable,
                         cast("int", methodCall(methodCall(inputTerm, "getDate"), "toEpochDay")));
                 break;
+            case TIME_WITHOUT_TIME_ZONE:
+                writer.assignStmt(
+                        returnVariable,
+                        staticCall(
+                                VariantCastUtils.class,
+                                "toTime",
+                                inputTerm,
+                                LogicalTypeChecks.getPrecision(targetLogicalType)));
+                break;
             case TIMESTAMP_WITHOUT_TIME_ZONE:
                 writer.assignStmt(
                         returnVariable,
@@ -191,6 +201,10 @@ class VariantToPrimitiveCastRule extends AbstractNullAwareCodeGeneratorCastRule<
                                 "toTimestampLtz",
                                 inputTerm,
                                 LogicalTypeChecks.getPrecision(targetLogicalType)));
+                break;
+            case UUID:
+                writer.assignStmt(
+                        returnVariable, staticCall(VariantCastUtils.class, "toUuid", inputTerm));
                 break;
             default:
                 throw new IllegalArgumentException(

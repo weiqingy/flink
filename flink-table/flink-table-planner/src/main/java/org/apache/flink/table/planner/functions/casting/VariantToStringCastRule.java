@@ -36,7 +36,9 @@ import static org.apache.flink.table.planner.functions.casting.CastRuleUtils.sta
  * <p>Renders the scalar value the way a regular SQL cast of the stored kind would, so a boolean
  * becomes {@code TRUE}, a timestamp uses the SQL format, and a {@code TIMESTAMP_LTZ} is shifted
  * into the session time zone and a binary value is read as UTF-8. A variant holding an object or
- * array has no scalar rendering and fails; use {@code JSON_STRING} for its JSON representation.
+ * array has no scalar form, so it renders like a regular {@code MAP} or {@code ARRAY} to string
+ * cast, an array as {@code [e1, e2]} and an object as {@code {k1=v1, k2=v2}}, with strings unquoted
+ * at every depth. This is a SQL rendering, not JSON; use {@code JSON_STRING} for the JSON form.
  *
  * <p>A binary value that is not well-formed UTF-8 fails instead of decoding to {@code U+FFFD}. Cast
  * it to {@code BYTES} to inspect the raw value, or wrap that in {@code MAKE_VALID_UTF8} to accept
@@ -47,8 +49,8 @@ import static org.apache.flink.table.planner.functions.casting.CastRuleUtils.sta
  * than by {@link CharVarCharTrimPadCastRule}, so that a variant storing a JSON {@code null} still
  * reaches SQL {@code NULL} and so that trimming counts code points rather than UTF-16 units.
  *
- * <p>Printing a result is not a cast and cannot fail, so it renders every variant as JSON rather
- * than extracting the scalar value. A stored string therefore prints quoted.
+ * <p>Printing uses {@link VariantCastUtils#toPrintString}, which renders the same way but never
+ * fails.
  */
 class VariantToStringCastRule extends AbstractExpressionCodeGeneratorCastRule<Variant, StringData> {
 
@@ -71,7 +73,8 @@ class VariantToStringCastRule extends AbstractExpressionCodeGeneratorCastRule<Va
     /**
      * Treats a variant that stores a JSON {@code null} as a {@code NULL} input, so it casts to SQL
      * {@code NULL} instead of the text {@code null}. Only applied for a nullable target: a {@code
-     * NOT NULL} result cannot carry {@code NULL}, so a null-valued variant then fails.
+     * NOT NULL} result cannot carry {@code NULL}, so a null-valued variant then fails. Printing
+     * skips this, so the formatter shows {@code NULL}.
      */
     @Override
     public CastCodeBlock generateCodeBlock(
@@ -80,7 +83,7 @@ class VariantToStringCastRule extends AbstractExpressionCodeGeneratorCastRule<Va
             String inputIsNullTerm,
             LogicalType inputLogicalType,
             LogicalType targetLogicalType) {
-        if (!targetLogicalType.isNullable()) {
+        if (!targetLogicalType.isNullable() || context.isPrinting()) {
             return super.generateCodeBlock(
                     context, inputTerm, inputIsNullTerm, inputLogicalType, targetLogicalType);
         }
@@ -97,10 +100,15 @@ class VariantToStringCastRule extends AbstractExpressionCodeGeneratorCastRule<Va
             LogicalType inputLogicalType,
             LogicalType targetLogicalType) {
         if (context.isPrinting()) {
-            // Every result has to be displayable, including an object or an array, which have no
-            // scalar rendering and would fail the cast. toJson returns a String, so it needs the
-            // wrap that toStringValue applies itself.
-            return staticCall(BINARY_STRING_DATA_FROM_STRING(), methodCall(inputTerm, "toJson"));
+            // toPrintString returns a String, so it needs the wrap that toStringValue applies
+            // itself.
+            return staticCall(
+                    BINARY_STRING_DATA_FROM_STRING(),
+                    staticCall(
+                            VariantCastUtils.class,
+                            "toPrintString",
+                            inputTerm,
+                            context.getSessionTimeZoneTerm()));
         }
         return staticCall(
                 VariantCastUtils.class,

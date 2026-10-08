@@ -282,7 +282,7 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
         val providedTrait = ModifyKindSetTrait.INSERT_ONLY
         createNewNode(rel, children, providedTrait, requiredTrait, requester)
 
-      case rank: StreamPhysicalRank if RankUtil.isDeduplication(rank) =>
+      case rank: StreamPhysicalRank if RankUtil.isDeduplicationOnTimeAttribute(rank) =>
         val children = visitChildren(rel, ModifyKindSetTrait.ALL_CHANGES)
         val tableConfig = unwrapTableConfig(rank)
 
@@ -304,7 +304,7 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
 
         createNewNode(rel, children, providedTrait, requiredTrait, requester)
 
-      case rank: StreamPhysicalRank if !RankUtil.isDeduplication(rank) =>
+      case rank: StreamPhysicalRank =>
         // Rank supports consuming all changes
         val children = visitChildren(rel, ModifyKindSetTrait.ALL_CHANGES)
         createNewNode(rel, children, ModifyKindSetTrait.ALL_CHANGES, requiredTrait, requester)
@@ -1433,14 +1433,29 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
 
         // if the condition is applied on the upsert key, we can emit whatever the requiredTrait
         // is, because we will filter all records based on the condition that applies to that key
-        case calc: StreamPhysicalCalcBase =>
+        case calc: StreamPhysicalCalc =>
           if (
             requiredTrait == DeleteKindTrait.DELETE_BY_KEY &&
-            isNonUpsertKeyCondition(calc)
+            (isNonUpsertKeyCondition(calc) || !hasOutputUpsertKey(calc))
           ) {
             None
           } else {
             // otherwise, forward DeleteKind requirement
+            visitChildren(rel, requiredTrait) match {
+              case None => None
+              case Some(children) =>
+                val childTrait = children.head.getTraitSet.getTrait(DeleteKindTraitDef.INSTANCE)
+                createNewNode(rel, Some(children), childTrait)
+            }
+          }
+
+        // Unlike StreamPhysicalCalc, other Calc nodes do not skip evaluating non-key expressions
+        // for a delete-by-key tombstone. We are conservative by default and never forward
+        // DELETE_BY_KEY.
+        case _: StreamPhysicalCalcBase =>
+          if (requiredTrait == DeleteKindTrait.DELETE_BY_KEY) {
+            None
+          } else {
             visitChildren(rel, requiredTrait) match {
               case None => None
               case Some(children) =>
@@ -1680,6 +1695,19 @@ class FlinkChangelogModeInferenceProgram extends FlinkOptimizeProgram[StreamOpti
       }
       upsertKeyDifferentFromPk
     }
+  }
+
+  /**
+   * Whether this calc's own output still has an upsert key after its projection. A DELETE_BY_KEY
+   * tombstone passed through this calc must still carry a key in its output, otherwise nothing
+   * downstream would know what to delete.
+   *
+   * This method is an extra safety net, in case downstream consumers don't require an upsert key.
+   */
+  private def hasOutputUpsertKey(calc: StreamPhysicalCalcBase): Boolean = {
+    val fmq = FlinkRelMetadataQuery.reuseOrCreate(calc.getCluster.getMetadataQuery)
+    val upsertKeys = fmq.getUpsertKeys(calc)
+    upsertKeys != null && upsertKeys.exists(!_.isEmpty)
   }
 
   private def isNonUpsertKeyCondition(calc: StreamPhysicalCalcBase): Boolean = {

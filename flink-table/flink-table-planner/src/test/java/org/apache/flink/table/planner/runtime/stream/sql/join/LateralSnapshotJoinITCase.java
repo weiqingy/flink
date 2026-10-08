@@ -58,10 +58,12 @@ import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThatList;
 @ExtendWith(ParameterizedTestExtension.class)
 public class LateralSnapshotJoinITCase extends StreamingWithStateTestBase {
 
-    /** The {@code 'user_time'} condition reached mid-stream by the build-side flip-trigger row. */
+    /**
+     * The build-side watermark reaches the configured {@code load_completed_time} gate mid-stream
+     * via the flip-trigger row.
+     */
     private static final String MID_FLIP =
-            "load_completed_condition => 'user_time', "
-                    + "load_completed_time => CAST(TIMESTAMP '2020-01-01 00:00:10' AS TIMESTAMP_LTZ(3))";
+            "load_completed_time => CAST(TIMESTAMP '2020-01-01 00:00:10' AS TIMESTAMP_LTZ(3))";
 
     /** Event time of the flip-trigger row; equal to the {@link #MID_FLIP} timestamp. */
     private static final String FLIP_TRIGGER_TS = "00:00:10";
@@ -110,7 +112,7 @@ public class LateralSnapshotJoinITCase extends StreamingWithStateTestBase {
         final List<Row> actual =
                 collect(
                         "SELECT probe.pk, s.bv FROM probe JOIN LATERAL SNAPSHOT("
-                                + "input => TABLE b, "
+                                + "input => TABLE b, on_time => DESCRIPTOR(bts), "
                                 + MID_FLIP
                                 + ") AS s ON probe.pk = s.bk");
 
@@ -132,7 +134,7 @@ public class LateralSnapshotJoinITCase extends StreamingWithStateTestBase {
         final List<Row> actual =
                 collect(
                         "SELECT probe.pk, s.bv FROM probe JOIN LATERAL SNAPSHOT("
-                                + "input => TABLE b, "
+                                + "input => TABLE b, on_time => DESCRIPTOR(bts), "
                                 + MID_FLIP
                                 + ") AS s ON probe.pk = s.bk");
 
@@ -168,7 +170,7 @@ public class LateralSnapshotJoinITCase extends StreamingWithStateTestBase {
                 sortedByProbeId(
                         collect(
                                 "SELECT probe.pv, s.bv FROM probe JOIN LATERAL SNAPSHOT("
-                                        + "input => TABLE b, "
+                                        + "input => TABLE b, on_time => DESCRIPTOR(bts), "
                                         + MID_FLIP
                                         + ") AS s ON probe.pk = s.bk"));
 

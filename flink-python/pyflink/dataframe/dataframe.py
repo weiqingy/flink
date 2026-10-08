@@ -16,6 +16,9 @@
 # limitations under the License.
 ################################################################################
 
+import datetime
+import keyword
+from contextlib import ExitStack
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -25,6 +28,7 @@ from typing import (
     Optional,
     Set,
     Tuple,
+    Type,
     TypeVar,
     Union,
     overload,
@@ -32,11 +36,15 @@ from typing import (
 
 if TYPE_CHECKING:
     import pandas
+    from pyflink.dataframe.udf import _DataTypeLike
+    from pyflink.dataframe.udtf import _DataFrameUDTFWrapper
+    from pyflink.table.table_environment import TableEnvironment
     from pyflink.table.table_schema import TableSchema
 
 from pyflink.common import Row
-from pyflink.dataframe.datatype import DataType
-from pyflink.table.expression import Expression
+from pyflink.dataframe.datatype import _INT_MAX, DataType
+from pyflink.java_gateway import get_gateway
+from pyflink.table.expression import Expression, _get_java_expression
 from pyflink.table.expressions import (
     and_,
     call_sql,
@@ -44,11 +52,23 @@ from pyflink.table.expressions import (
     lit as table_lit,
 )
 from pyflink.table.table import Table
+from pyflink.table.types import ArrayType, MapType, MultisetType, RowType
+from pyflink.table.table_descriptor import TableDescriptor
 from pyflink.util.api_stability_decorators import PublicEvolving
+from pyflink.util.java_utils import to_jarray
 
 __all__ = ["DataFrame", "GroupedDataFrame", "col", "lit"]
 
 T = TypeVar("T")
+
+
+def _validate_row_count(n: int) -> None:
+    if isinstance(n, bool) or not isinstance(n, int):
+        raise TypeError("n must be an integer")
+    if n < 0:
+        raise ValueError("n must be non-negative")
+    if n > _INT_MAX:
+        raise ValueError(f"n must be less than or equal to {_INT_MAX}")
 
 
 @PublicEvolving()
@@ -211,8 +231,17 @@ class DataFrame:
 
             >>> import pyflink.dataframe as pf
             >>> df = pf.from_records([{"left": 1, "right": 2}])
-            >>> result = df.with_column(
+
+            >>> with_expression = df.with_column(
             ...     "total", lambda current: current["left"] + current["right"]
+            ... )
+
+            >>> @pf.udf
+            ... def add(left: int, right: int) -> int:
+            ...     return left + right
+
+            >>> with_udf = df.with_column(
+            ...     "total", add(pf.col("left"), pf.col("right"))
             ... )
 
         .. versionadded:: 2.4.0
@@ -533,14 +562,920 @@ class DataFrame:
                     "subset column '%s' does not exist, available columns: %s" % (name, columns)
                 )
 
+        order_list = order_keys if order_keys is not None else [None]
+        descending_flags = [keep == "last"] * len(order_list)
+        rank_nulls = nulls if nulls is not None else [None] * len(order_list)
         return DataFrame(
-            _build_deduplication_query(
-                self._table, columns, subset_keys, order_keys, keep, nulls
-            )
-        )
+            _build_rank_sql(self._table, subset_keys, order_list, descending_flags, rank_nulls, 1))
+
+    @PublicEvolving()
+    def top_n(
+        self,
+        n: int,
+        *,
+        partition_by: Union[str, List[str]] = None,
+        order_by: Union[str, Expression, List[Union[str, Expression]]] = None,
+        descending: Union[bool, List[bool]] = False,
+        nulls_first: Union[bool, List[bool]] = None,
+    ) -> "DataFrame":
+        """
+        Keep the top ``n`` rows per group, ordered by ``order_by``.
+
+        With ``partition_by`` the ranking is per group; without it the ranking is global.
+        ``top_n(1, ...)`` keeps a single row per group.
+
+        The default ranking direction is ascending (``descending=False``), so ``top_n`` keeps
+        the SMALLEST ``n`` rows by ``order_by``. Pass ``descending=True`` to keep the largest.
+
+        :param n: Number of rows to keep per group. Must be >= 1.
+        :param partition_by: Column name or list of column names defining the groups.
+        :param order_by: Column name or expression (or a list of them) defining the ranking order.
+        :param descending: Ranking direction (default ``False``); a bool or one per ``order_by``.
+        :param nulls_first: Where NULLs rank in ``order_by``: a single boolean applied to every key,
+            or a list with one boolean per key. When omitted, the engine default applies. Requires
+            ``order_by``.
+        :return: A new DataFrame with the top ``n`` rows per group.
+        :raises ValueError: If ``n`` is not an int or is < 1, if a ``descending``
+            or ``nulls_first`` list has a length different from ``order_by``, or if a named
+            column does not exist.
+        :raises TypeError: If an argument has an unsupported type, or ``order_by`` is missing
+            or empty.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records([{"cat": "a", "amount": 10}])
+            >>> top3 = df.top_n(3, partition_by="cat", order_by="amount", descending=True)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(n, int) or n < 1:
+            raise ValueError("n must be an integer >= 1")
+
+        if order_by is None or (isinstance(order_by, (list, tuple)) and not order_by):
+            raise TypeError("top_n requires a non-empty order_by")
+        order_keys = _normalize_order_by(order_by)
+
+        if partition_by is None or (isinstance(partition_by, (list, tuple)) and not partition_by):
+            partition_keys = []
+        else:
+            partition_keys = _normalize_subset(partition_by, "partition_by")
+
+        descending_flags = _normalize_descending(descending, len(order_keys))
+        nulls = _normalize_nulls_first(nulls_first, len(order_keys))
+        rank_nulls = nulls if nulls is not None else [None] * len(order_keys)
+        return DataFrame(
+            _build_rank_sql(self._table, partition_keys, order_keys, descending_flags, rank_nulls,
+                            n))
 
     distinct = drop_duplicates
     unique = drop_duplicates
+
+    @PublicEvolving()
+    def flat_map(
+        self,
+        func: Union[Callable[[Dict[str, Any]], Any], Type, "_DataFrameUDTFWrapper"],
+        *,
+        return_dtype: Optional["_DataTypeLike"] = None,
+    ) -> "DataFrame":
+        """
+        Apply a function to each row, emitting zero or more output rows.
+
+        The function receives a dictionary keyed by column name, including when
+        declared with :func:`pyflink.dataframe.udtf`.
+        Output column names come from a ``TypedDict`` or an explicit named struct;
+        scalar outputs use ``f0``. Multi-field outputs require named fields.
+
+        :param func: Row-based callable, a callable class with a zero-argument constructor,
+                     or a declaration created with ``pf.udtf``. Callable classes are
+                     instantiated on workers.
+        :param return_dtype: Emitted row type, inferred from annotations when omitted.
+                             Required if inference is not possible; must be omitted
+                             for a UDTF declaration.
+        :return: A DataFrame containing only the emitted output columns.
+
+        Example::
+
+            >>> from typing import Any, Dict, Iterator, TypedDict
+            >>> import pyflink.dataframe as pf
+            >>> class Token(TypedDict):
+            ...     word: str
+            >>> def split(record: Dict[str, Any]) -> Iterator[Token]:
+            ...     for word in record["text"].split():
+            ...         yield {"word": word}
+            >>> df = pf.from_dict({"text": ["hello world", "flink"]})
+            >>> result = df.flat_map(split)
+            >>> result.columns
+            ['word']
+
+        The decorator is optional for plain callables. Use it to attach reusable
+        metadata, such as the output schema, instead of repeating it in each
+        ``flat_map`` call::
+
+            >>> @pf.udtf(return_dtype="ROW<word STRING>")
+            ... def tokenize(record: Dict[str, Any]):
+            ...     yield from record["text"].split()
+            >>> result = df.flat_map(tokenize)
+            >>> result.columns
+            ['word']
+
+        An explicit output type can be supplied for unannotated callables::
+
+            >>> words = df.flat_map(lambda record: record["text"].split(), return_dtype=str)
+            >>> words.columns
+            ['f0']
+            >>> named = df.flat_map(
+            ...     lambda record: record["text"].split(),
+            ...     return_dtype="ROW<word STRING>")
+            >>> named.columns
+            ['word']
+
+        Callable classes can be passed directly and are instantiated on workers::
+
+            >>> class SplitWords:
+            ...     def __call__(self, record: Dict[str, Any]) -> Iterator[str]:
+            ...         yield from record["text"].split()
+            >>> words = df.flat_map(SplitWords)
+
+        ``TableFunction`` classes are declared with :func:`pyflink.dataframe.udtf`::
+
+            >>> from pyflink.table.udf import TableFunction
+            >>> class SplitWordsFunction(TableFunction):
+            ...     def eval(self, record: Dict[str, Any]) -> Iterator[str]:
+            ...         yield from record["text"].split()
+            >>> words = df.flat_map(pf.udtf(SplitWordsFunction))
+
+        See :func:`pyflink.dataframe.udtf` for more details.
+
+        .. versionadded:: 2.4.0
+        """
+        from pyflink.dataframe.udtf import _resolve_flat_map_udtf
+
+        expression, output_columns = _resolve_flat_map_udtf(func, return_dtype, self.columns)
+        table = self._table.flat_map(expression)
+        # Table UDTFs expose positional field names, so restore the declared names.
+        return DataFrame(table.alias(output_columns[0], *output_columns[1:]))
+
+    @PublicEvolving()
+    def explode(
+        self,
+        column: Union[str, Expression],
+        *,
+        output_column: Optional[Union[str, List[str]]] = None,
+        ignore_empty_and_null: bool = False,
+    ) -> "DataFrame":
+        """
+        Expand an ARRAY, MAP, or MULTISET into rows, preserving duplicate occurrences.
+
+        A referenced input column is replaced in place by the expanded element. For a computed
+        collection expression, all input columns are retained and the expanded element is
+        appended. MAP values yield key and value fields. ROW elements remain a single ROW column;
+        use :attr:`pyflink.table.Expression.flatten` in a subsequent :meth:`select` to expand its
+        fields. Empty and null collections produce a row with null output fields unless
+        ``ignore_empty_and_null`` is true.
+
+        .. warning::
+            Due to FLINK-40658, actual null ROW elements in an ARRAY are not handled correctly
+            and may be silently dropped or cause execution to fail. This limitation is independent
+            of ``ignore_empty_and_null``. A non-null ROW whose fields are all null is not affected.
+
+        :param column: Collection column name or row-wise expression to expand.
+        :param output_column: Output name or list of names. Required for multiple fields;
+            a single field defaults to the selected column name. Names must be unique and must
+            not conflict with retained input columns.
+        :param ignore_empty_and_null: Whether to drop rows with empty or null collections.
+        :return: A new DataFrame with the expanded rows.
+        :raises TypeError: If an argument has an unsupported type or the input is not a collection.
+        :raises ValueError: If the expression is not row-wise, selects multiple columns,
+            or output names are invalid.
+
+        Examples:
+
+        Explode an ARRAY of scalar values::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_dict({"id": [1, 2], "tags": [["a", "b"], []]})
+            >>> result = df.explode(
+            ...     "tags", output_column="tag", ignore_empty_and_null=True)
+
+        Explode an ARRAY of ROW values, then expand the ROW fields explicitly::
+
+            >>> import pyflink.dataframe as pf
+            >>> from typing import NamedTuple
+            >>> class Item(NamedTuple):
+            ...     name: str
+            ...     quantity: int
+            >>> orders = pf.from_records(
+            ...     [(1, [Item("apple", 2)])], schema=["id", "items"])
+            >>> exploded = orders.explode("items", ignore_empty_and_null=True)
+            >>> flattened = exploded.select("id", pf.col("items").flatten)
+            >>> flattened.columns
+            ['id', 'items$name', 'items$quantity']
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(column, (str, Expression)):
+            raise TypeError("column must be a column name or expression")
+        if not isinstance(ignore_empty_and_null, bool):
+            raise TypeError("ignore_empty_and_null must be a boolean")
+        if output_column is not None and not isinstance(output_column, (str, list)):
+            raise TypeError("output_column must be a string or list of strings")
+
+        expression = table_col(column) if isinstance(column, str) else column
+        selected = self._table.select(expression)
+        schema = selected.get_resolved_schema()
+        if len(schema.get_column_names()) != 1:
+            raise ValueError("column must select a single column")
+        projection = selected._j_table.getQueryOperation()
+        # Aggregates insert an intermediate operation whose field indexes refer to its result.
+        if not projection.getChildren().get(0).equals(self._table._j_table.getQueryOperation()):
+            raise ValueError("column must be a row-wise expression, not an aggregation")
+
+        data_type = schema.get_column_data_types()[0]
+        element_row_type = None
+        element_row_type_sql = None
+        if isinstance(data_type, MapType):
+            field_count = 2
+        elif isinstance(data_type, (ArrayType, MultisetType)):
+            element_type = data_type.element_type
+            element_row_type = element_type if isinstance(element_type, RowType) else None
+            if element_row_type is not None:
+                collection_type = schema._j_resolved_schema.getColumnDataTypes().get(0)
+                element_row_type_sql = (
+                    collection_type.getChildren()
+                    .get(0)
+                    .getLogicalType()
+                    .copy(True)
+                    .asSerializableString()
+                )
+            field_count = 1
+        else:
+            raise TypeError("column must have an ARRAY, MAP, or MULTISET type")
+
+        if output_column is None:
+            if field_count != 1:
+                raise ValueError("output_column is required for multiple output fields")
+            output_names = [schema.get_column_names()[0]]
+        else:
+            output_names = [output_column] if isinstance(output_column, str) else output_column
+        if not all(isinstance(name, str) for name in output_names):
+            raise TypeError("output_column must contain only strings")
+        if len(output_names) != field_count:
+            raise ValueError("output_column must contain %d name(s)" % field_count)
+        if any(not name for name in output_names) or len(set(output_names)) != field_count:
+            raise ValueError("output_column names must be non-empty and unique")
+
+        table = self._table
+        columns = list(table.get_resolved_schema().get_column_names())
+        resolved = projection.getProjectList().get(0)
+        # Resolve the input field by index so an alias does not hide the column to remove.
+        if resolved.getClass().getSimpleName() == "FieldReferenceExpression":
+            output_index = resolved.getFieldIndex()
+            collection_name = columns.pop(output_index)
+        else:
+            output_index = len(columns)
+            taken = set(columns) | set(output_names)
+            collection_name = _unique_name("__pf_explode", taken)
+            table = table.add_columns(expression.alias(collection_name))
+        if set(output_names).intersection(columns):
+            raise ValueError("output_column names conflict with retained input columns")
+
+        unnest_output_names = output_names
+        ordinality_name = None
+        if element_row_type is not None:
+            # SQL UNNEST expands ROW fields. Reassemble them below, using ordinality to
+            # distinguish an outer-join placeholder from a real ROW whose fields are all null.
+            taken = set(columns) | set(output_names) | {collection_name}
+            unnest_output_names = []
+            for index in range(len(element_row_type.fields)):
+                name = _unique_name("__pf_explode_field_%d" % index, taken)
+                taken.add(name)
+                unnest_output_names.append(name)
+            if not ignore_empty_and_null:
+                ordinality_name = _unique_name("__pf_explode_ordinality", taken)
+
+        if element_row_type is None:
+            explode_projection = [
+                "expanded." + _quote_identifier(name) for name in unnest_output_names
+            ]
+        else:
+            row_value = "CAST(ROW(%s) AS %s)" % (
+                ", ".join(
+                    "expanded." + _quote_identifier(name) for name in unnest_output_names
+                ),
+                element_row_type_sql,
+            )
+            if ordinality_name is not None:
+                row_value = "CASE WHEN expanded.%s IS NULL THEN CAST(NULL AS %s) ELSE %s END" % (
+                    _quote_identifier(ordinality_name),
+                    element_row_type_sql,
+                    row_value,
+                )
+            explode_projection = [row_value + " AS " + _quote_identifier(output_names[0])]
+
+        projections = ["src." + _quote_identifier(name) for name in columns]
+        projections[output_index:output_index] = explode_projection
+        query = "SELECT %s FROM %s AS src %s UNNEST(src.%s)%s AS expanded(%s)%s" % (
+            ", ".join(projections),
+            _quote_identifier(str(table)),
+            "CROSS JOIN" if ignore_empty_and_null else "LEFT JOIN",
+            _quote_identifier(collection_name),
+            " WITH ORDINALITY" if ordinality_name is not None else "",
+            ", ".join(
+                _quote_identifier(name)
+                for name in unnest_output_names
+                + ([ordinality_name] if ordinality_name is not None else [])
+            ),
+            "" if ignore_empty_and_null else " ON TRUE",
+        )
+        return DataFrame(table._t_env.sql_query(query))
+
+    # ======================== Joins ========================
+
+    @PublicEvolving()
+    def join(
+        self,
+        other: "DataFrame",
+        *,
+        on=None,
+        how: str = "inner",
+        left_on=None,
+        right_on=None,
+    ) -> "DataFrame":
+        """
+        Join this DataFrame with another DataFrame.
+
+        Use ``on`` when both sides share the same named join keys, or pass a boolean expression as
+        the complete join predicate. Use ``left_on`` and ``right_on`` together when the key names
+        differ. In streaming mode, a join without equality keys may use singleton distribution
+        (a single parallel instance) and can be expensive.
+        Shared named keys occur once in the result; other duplicate column names must be renamed
+        before joining. ``semi`` and ``anti`` joins return only columns from this DataFrame, while
+        ``cross`` performs a Cartesian product and accepts no join keys.
+
+        :param other: DataFrame on the right side of the join.
+        :param on: Shared column name, list of shared column names, or a boolean join expression.
+        :param how: Join type: ``"inner"``, ``"left"``, ``"right"``, ``"full"``, ``"outer"``,
+            ``"semi"``, ``"anti"``, or ``"cross"``.
+        :param left_on: Column name, expression, or list of column names from this DataFrame.
+        :param right_on: Column name, expression, or list of column names from ``other``.
+        :return: A new DataFrame containing the join result.
+        :raises TypeError: If an argument has an unsupported type.
+        :raises ValueError: If the join type, keys, schemas, or argument combination is invalid.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> orders = pf.from_records([(1, 10)], schema=["customer_id", "amount"])
+            >>> customers = pf.from_records([(1, "Alice")], schema=["customer_id", "name"])
+            >>> matched = orders.join(customers, on="customer_id")
+            >>> matched = orders.join(
+            ...     customers.rename_columns({"customer_id": "id"}),
+            ...     left_on="customer_id",
+            ...     right_on="id",
+            ...     how="left",
+            ... )
+
+        Expression-based predicates support equality, compound conditions, and non-equi joins::
+
+            >>> customers_by_id = customers.rename_columns({"customer_id": "id"})
+            >>> matched = orders.join(
+            ...     customers_by_id, on=pf.col("customer_id") == pf.col("id"))
+            >>> rules = pf.from_records([(1, 5)], schema=["rule_customer_id", "min_amount"])
+            >>> matched = orders.join(
+            ...     rules,
+            ...     on=(pf.col("customer_id") == pf.col("rule_customer_id"))
+            ...     & (pf.col("amount") >= pf.col("min_amount")),
+            ... )
+            >>> matched = orders.join(rules, on=pf.col("amount") >= pf.col("min_amount"))
+            >>> unmatched = orders.join(
+            ...     customers_by_id,
+            ...     on=pf.col("customer_id") == pf.col("id"),
+            ...     how="anti",
+            ... )
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a pyflink.dataframe.DataFrame")
+        if self._table._t_env._j_tenv != other._table._t_env._j_tenv:
+            raise ValueError("DataFrames must belong to the same TableEnvironment")
+
+        join_type = _normalize_join_type(how)
+        if join_type == "cross":
+            if on is not None or left_on is not None or right_on is not None:
+                raise ValueError("cross join does not accept on, left_on, or right_on")
+            _validate_join_column_conflicts(self.columns, other.columns, set())
+            return DataFrame(self._table.join(other._table))
+
+        (
+            left_table,
+            right_table,
+            predicate,
+            shared_keys,
+        ) = _prepare_join(
+            self._table,
+            other._table,
+            on,
+            left_on,
+            right_on,
+            validate_column_conflicts=join_type not in ("semi", "anti"),
+        )
+
+        with _JoinSqlFactory(self._table._t_env) as sql_factory:
+            if join_type in ("semi", "anti"):
+                return DataFrame(
+                    _build_semi_anti_join_sql(
+                        left_table,
+                        right_table,
+                        predicate,
+                        self.columns,
+                        join_type,
+                        sql_factory,
+                    )
+                )
+
+            return DataFrame(
+                _build_regular_join_sql(
+                    left_table,
+                    right_table,
+                    predicate,
+                    self.columns,
+                    other.columns,
+                    shared_keys,
+                    join_type,
+                    sql_factory,
+                )
+            )
+
+    # ======================== Filtering & Ordering ========================
+
+    @PublicEvolving()
+    def sort(
+        self,
+        by: Union[str, Expression, List[Union[str, Expression]]],
+        *,
+        descending: Union[bool, List[bool]] = False,
+        nulls_first: Union[bool, List[bool]] = None,
+    ) -> "DataFrame":
+        """
+        Sort rows globally by one or more columns or expressions.
+
+        This method builds a new DataFrame plan without executing a Flink job. The ``by``
+        expressions must not already specify ``asc`` or ``desc``; use ``descending`` to control
+        their direction. When ``nulls_first`` is omitted, the Table API default is used: NULLs
+        are ordered last for ascending keys and first for descending keys.
+
+        The result is globally sorted across all parallel partitions. For unbounded tables, the
+        first sort key must be an ascending time attribute unless the sort is followed by
+        :meth:`limit`.
+
+        :param by: Column name or expression, or a list of them, used as sort keys.
+        :param descending: Whether to sort in descending order, either for all keys or once per
+            key.
+        :param nulls_first: Whether to place NULLs first, either for all keys or once per key. When
+            omitted, the Table API default applies.
+        :return: A new sorted DataFrame.
+        :raises TypeError: If ``by``, ``descending`` or ``nulls_first`` has an unsupported type.
+        :raises ValueError: If ``by`` is empty, option lengths do not match, a column does not
+            exist, or an expression already specifies ``asc`` or ``desc``.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records(
+            ...     [(2, "b"), (1, "a")], schema=["id", "name"]
+            ... )
+            >>> ascending = df.sort("id")
+            >>> mixed = df.sort(["id", "name"], descending=[False, True])
+
+        .. versionadded:: 2.4.0
+        """
+        order_keys = _normalize_order_by(by, "by")
+        if order_keys is None:
+            raise TypeError("by must be a string, an expression, or a list or tuple of them")
+        columns = self._table.get_resolved_schema().get_column_names()
+        for key in order_keys:
+            if isinstance(key, str) and key not in columns:
+                raise ValueError(
+                    "by column '%s' does not exist, available columns: %s" % (key, columns)
+                )
+            if isinstance(key, Expression) and _contains_ordering_expression(key):
+                raise ValueError(
+                    "sort() expressions must not specify asc or desc; use descending instead"
+                )
+
+        descending_values = _normalize_descending(descending, len(order_keys))
+        nulls_values: List[Optional[bool]] = (
+            [None] * len(order_keys)
+            if nulls_first is None
+            else _normalize_nulls_first(nulls_first, len(order_keys))
+        )
+        if any(value is not None for value in nulls_values):
+            return DataFrame(
+                _build_sort_sql(self._table, order_keys, descending_values, nulls_values)
+            )
+
+        order_expressions = []
+        for key, is_descending in zip(order_keys, descending_values):
+            expression = table_col(key) if isinstance(key, str) else key
+            order_expressions.append(expression.desc if is_descending else expression.asc)
+        return DataFrame(self._table.order_by(*order_expressions))
+
+    # ======================== Set Operations ========================
+
+    @PublicEvolving()
+    def union(self, other: "DataFrame") -> "DataFrame":
+        """
+        Return rows from either DataFrame, removing duplicate rows (SQL ``UNION``).
+
+        This operation is currently supported only in batch mode.
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with compatible types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+
+        :param other: The DataFrame to combine with this DataFrame.
+        :return: A new DataFrame containing the distinct rows from both inputs.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.union(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.union(other._table))
+
+    @PublicEvolving()
+    def union_all(self, other: "DataFrame") -> "DataFrame":
+        """
+        Return rows from both DataFrames, retaining all duplicates (SQL ``UNION ALL``).
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with compatible types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+
+        :param other: The DataFrame to combine with this DataFrame.
+        :return: A new DataFrame containing all rows from both inputs.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.union_all(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.union_all(other._table))
+
+    @PublicEvolving()
+    def intersect(self, other: "DataFrame") -> "DataFrame":
+        """
+        Return rows present in both DataFrames, removing duplicates (SQL ``INTERSECT``).
+
+        This operation is currently supported only in batch mode.
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with matching types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+        Cast differing column types explicitly before calling this method.
+
+        :param other: The DataFrame to intersect with this DataFrame.
+        :return: A new DataFrame containing the distinct rows common to both inputs.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.intersect(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.intersect(other._table))
+
+    @PublicEvolving()
+    def intersect_all(self, other: "DataFrame") -> "DataFrame":
+        """
+        Return rows present in both DataFrames, retaining duplicates (SQL ``INTERSECT ALL``).
+
+        This operation is currently supported only in batch mode.
+
+        A row occurring ``n`` times in this DataFrame and ``m`` times in ``other`` is returned
+        ``min(n, m)`` times.
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with matching types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+        Cast differing column types explicitly before calling this method.
+
+        :param other: The DataFrame to intersect with this DataFrame.
+        :return: A new DataFrame containing the common rows with their shared multiplicities.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.intersect_all(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.intersect_all(other._table))
+
+    @PublicEvolving()
+    def minus(self, other: "DataFrame") -> "DataFrame":
+        """
+        Return rows absent from ``other``, removing duplicate rows (SQL ``EXCEPT``).
+
+        This operation is currently supported only in batch mode.
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with matching types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+        Cast differing column types explicitly before calling this method.
+
+        :param other: The DataFrame whose rows are excluded from this DataFrame.
+        :return: A new DataFrame containing the distinct rows present only in this DataFrame.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.minus(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.minus(other._table))
+
+    @PublicEvolving()
+    def minus_all(self, other: "DataFrame") -> "DataFrame":
+        """
+        Subtract the occurrences of rows in ``other`` from this DataFrame (SQL ``EXCEPT ALL``).
+
+        This operation is currently supported only in batch mode.
+
+        A row occurring ``n`` times in this DataFrame and ``m`` times in ``other`` is returned
+        ``max(n - m, 0)`` times.
+
+        Both DataFrames must belong to the same TableEnvironment and have the same number
+        of columns with matching types at each position. Columns are matched by position,
+        not by name; the result uses this DataFrame's column names.
+        Cast differing column types explicitly before calling this method.
+
+        :param other: The DataFrame whose row occurrences are subtracted.
+        :return: A new DataFrame containing the remaining row occurrences.
+        :raises TypeError: If ``other`` is not a DataFrame.
+
+        Example::
+
+            >>> result = left.minus_all(right)
+
+        .. versionadded:: 2.4.0
+        """
+        if not isinstance(other, DataFrame):
+            raise TypeError("other must be a DataFrame")
+        return DataFrame(self._table.minus_all(other._table))
+
+    # ======================== Windowing ========================
+
+    @PublicEvolving()
+    def tumble(
+        self,
+        *,
+        on: Union[str, Expression],
+        size: Union["datetime.timedelta", Expression],
+    ) -> "DataFrame":
+        """
+        Assign rows to fixed-size, non-overlapping (tumbling) windows.
+
+        Appends ``window_start``, ``window_end`` and ``window_time`` and returns an ordinary
+        DataFrame.
+
+        :param on: An existing event-time or processing-time column.
+        :param size: Window length.
+        :return: A new DataFrame with the window columns appended.
+        :raises TypeError: If ``on`` or ``size`` has an unsupported type.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> from datetime import timedelta
+            >>> windowed = df.tumble(on="event_time", size=timedelta(minutes=10))
+
+        .. versionadded:: 2.4.0
+        """
+        time_col = _resolve_window_time_column(on)
+        return _window_dataframe(
+            self._table, "TUMBLE", time_col, _to_interval_expression(size)
+        )
+
+    @PublicEvolving()
+    def hop(
+        self,
+        *,
+        on: Union[str, Expression],
+        slide: Union["datetime.timedelta", Expression],
+        size: Union["datetime.timedelta", Expression],
+    ) -> "DataFrame":
+        """
+        Assign rows to overlapping fixed-size (hopping/sliding) windows of length ``size`` starting
+        every ``slide``. Appends ``window_start``/``window_end``/``window_time``.
+
+        :param on: An existing event-time or processing-time column.
+        :param slide: Interval between successive window starts.
+        :param size: Window length.
+        :return: A new DataFrame with the window columns appended.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> from datetime import timedelta
+            >>> windowed = df.hop(
+            ...     on="event_time",
+            ...     slide=timedelta(minutes=5),
+            ...     size=timedelta(minutes=10),
+            ... )
+
+        .. versionadded:: 2.4.0
+        """
+        time_col = _resolve_window_time_column(on)
+        return _window_dataframe(
+            self._table,
+            "HOP",
+            time_col,
+            _to_interval_expression(slide),
+            _to_interval_expression(size),
+        )
+
+    @PublicEvolving()
+    def cumulate(
+        self,
+        *,
+        on: Union[str, Expression],
+        step: Union["datetime.timedelta", Expression],
+        size: Union["datetime.timedelta", Expression],
+    ) -> "DataFrame":
+        """
+        Assign rows to cumulating windows that share a start and grow by ``step`` up to ``size``.
+        Appends ``window_start``/``window_end``/``window_time``.
+
+        :param on: An existing event-time or processing-time column.
+        :param step: Interval by which each window grows.
+        :param size: Maximum window length (a whole multiple of ``step``).
+        :return: A new DataFrame with the window columns appended.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> from datetime import timedelta
+            >>> windowed = df.cumulate(
+            ...     on="event_time",
+            ...     step=timedelta(minutes=5),
+            ...     size=timedelta(minutes=10),
+            ... )
+
+        .. versionadded:: 2.4.0
+        """
+        time_col = _resolve_window_time_column(on)
+        return _window_dataframe(
+            self._table,
+            "CUMULATE",
+            time_col,
+            _to_interval_expression(step),
+            _to_interval_expression(size),
+        )
+
+    @PublicEvolving()
+    def session(
+        self,
+        *,
+        on: Union[str, Expression],
+        gap: Union["datetime.timedelta", Expression],
+        partition_by: Optional[
+            Union[str, Expression, List[Union[str, Expression]]]
+        ] = None,
+    ) -> "DataFrame":
+        """
+        Assign rows to activity-based (session) windows that close after ``gap`` of inactivity.
+        Appends ``window_start``/``window_end``/``window_time``.
+        When ``partition_by`` is given, sessions are computed independently per key, so a gap in
+        one key's activity does not close another key's session.
+
+        :param on: An existing event-time or processing-time column.
+        :param gap: Inactivity gap that closes a session.
+        :param partition_by: Optional column name or expression or list of column names or
+            expressions to compute per-key sessions. ``None`` means a global session.
+        :return: A new DataFrame with the window columns appended.
+        :raises TypeError: If ``partition_by`` contains an unsupported element type.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> from datetime import timedelta
+            >>> windowed = df.session(
+            ...     on="event_time",
+            ...     gap=timedelta(minutes=10),
+            ...     partition_by="id",
+            ... )
+
+        .. versionadded:: 2.4.0
+        """
+        time_col = _resolve_window_time_column(on)
+        partition_cols = _resolve_partition_columns(partition_by)
+        return _window_dataframe(
+            self._table,
+            "SESSION",
+            time_col,
+            _to_interval_expression(gap),
+            partition_cols=partition_cols,
+        )
+
+    # ======================== Slicing ========================
+
+    @PublicEvolving()
+    def limit(self, n: int) -> "DataFrame":
+        """
+        Keep at most the first ``n`` rows.
+
+        This method builds a new DataFrame plan without executing a Flink job. Execution is
+        triggered by an action such as :meth:`collect` or :meth:`to_pandas`. Without an explicit
+        ordering on the underlying table, the selected rows and their order are unspecified.
+        Changes to the underlying table content may also change the result.
+
+        :param n: Maximum number of rows to keep.
+        :return: A new DataFrame containing at most ``n`` rows.
+        :raises TypeError: If ``n`` is not an integer.
+        :raises ValueError: If ``n`` is negative.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records([{"id": 1}, {"id": 2}, {"id": 3}])
+            >>> first_two = df.limit(2)
+
+        .. versionadded:: 2.4.0
+        """
+        _validate_row_count(n)
+        return DataFrame(self._table.fetch(n))
+
+    @PublicEvolving()
+    def offset(self, n: int) -> "DataFrame":
+        """
+        Skip the first ``n`` rows.
+
+        This method builds a new DataFrame plan without executing a Flink job. Execution is
+        triggered by an action such as :meth:`collect` or :meth:`to_pandas`. Without an explicit
+        ordering on the underlying table, the skipped rows and their order are unspecified.
+        Changes to the underlying table content may also change the result. Combine this method
+        with :meth:`limit` for pagination.
+
+        :param n: Number of rows to skip.
+        :return: A new DataFrame without the first ``n`` rows.
+        :raises TypeError: If ``n`` is not an integer.
+        :raises ValueError: If ``n`` is negative.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records([{"id": 1}, {"id": 2}, {"id": 3}])
+            >>> page = df.offset(1).limit(2)
+
+        .. versionadded:: 2.4.0
+        """
+        _validate_row_count(n)
+        return DataFrame(self._table.offset(n))
+
+    @PublicEvolving()
+    def head(self, n: int) -> "DataFrame":
+        """
+        Keep at most the first ``n`` rows.
+
+        This method builds a new DataFrame plan without executing a Flink job and delegates to
+        :meth:`limit`. Execution is triggered by an action such as :meth:`collect` or
+        :meth:`to_pandas`. Without an explicit ordering on the underlying table, the selected rows
+        and their order are unspecified. Changes to the underlying table content may also change
+        the result.
+
+        :param n: Maximum number of rows to keep.
+        :return: A new DataFrame containing at most ``n`` rows.
+        :raises TypeError: If ``n`` is not an integer.
+        :raises ValueError: If ``n`` is negative.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records([{"id": 1}, {"id": 2}, {"id": 3}])
+            >>> first_two = df.head(2)
+
+        .. versionadded:: 2.4.0
+        """
+        return self.limit(n)
 
     # ======================== Aggregation ========================
 
@@ -680,6 +1615,52 @@ class DataFrame:
         if isinstance(key, Expression):
             return self.filter(key)
         raise TypeError("key must be a string, list, tuple, or Expression")
+
+    @PublicEvolving()
+    def __getattr__(self, name: str) -> Expression:
+        """
+        Return a column expression for an attribute name.
+
+        The name must be a valid Python identifier, must not start with an underscore, must not be
+        a Python keyword, and must identify an existing column. Existing DataFrame attributes take
+        precedence over columns. Use ``df["column name"]`` for names that cannot be accessed as
+        attributes, or ``df["select"]`` for columns that conflict with existing attributes.
+
+        This method resolves the schema without executing a Flink job.
+
+        :param name: Name of the referenced column.
+        :return: An expression referencing the column.
+        :raises AttributeError: If the name is invalid, private, or does not identify an existing
+            column.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> df = pf.from_records([{"id": 1, "name": "Alice"}])
+            >>> selected = df.select(df.name)
+            >>> filtered = df.filter(df.id > 0)
+
+        .. versionadded:: 2.4.0
+        """
+        if (
+            name.startswith("_")
+            or not name.isidentifier()
+            or keyword.iskeyword(name)
+            or any(name in cls.__dict__ for cls in type(self).__mro__)
+        ):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
+        # Avoid re-entering __getattr__ if the underlying table has not been initialized.
+        try:
+            table = object.__getattribute__(self, "_table")
+        except AttributeError:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            ) from None
+
+        if name not in table.get_resolved_schema().get_column_names():
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        return table_col(name)
 
     # ======================== Composition ========================
 
@@ -821,6 +1802,278 @@ class DataFrame:
     # ======================== I/O ========================
 
     @PublicEvolving()
+    def write_parquet(
+        self,
+        path: str,
+        *,
+        mode: str = "append",
+        partition_by: Optional[Union[str, List[str]]] = None,
+        compression: Optional[str] = None,
+        utc_timezone: Optional[bool] = None,
+        sink_parallelism: Optional[int] = None,
+        sink_shuffle_by_partition: Optional[bool] = None,
+        auto_compaction: Optional[bool] = None,
+        compaction_file_size: Optional[str] = None,
+        rolling_policy_file_size: Optional[str] = None,
+        rolling_policy_rollover_interval: Optional[str] = None,
+        rolling_policy_inactivity_interval: Optional[str] = None,
+        rolling_policy_check_interval: Optional[str] = None,
+        partition_commit_trigger: Optional[str] = None,
+        partition_commit_delay: Optional[str] = None,
+        partition_commit_policy_kind: Optional[str] = None,
+        connector_options: Optional[Dict[str, str]] = None,
+        format_options: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Write Parquet files using Flink's filesystem connector.
+
+        The filesystem connector and Parquet format must be available to Flink. The write
+        is submitted immediately and waits for completion for local or MiniCluster execution.
+        Sink columns are derived from this DataFrame's schema. Writes default to append in both
+        batch and streaming execution. Explicit overwrite requires batch execution and is rejected
+        by the filesystem connector in streaming execution. Partitioned overwrite replaces only
+        partitions present in the input, retaining other partitions.
+
+        Optional connector and format parameters use ``None`` to leave the option unspecified.
+        If neither a parameter nor its dictionary option is set, the connector or format factory
+        supplies the default.
+
+        Rolling policies apply to streaming sinks. Parquet also rolls files on checkpoints;
+        continuous writes require checkpointing to finish files. Partition commit in streaming
+        requires ``partition_by`` and a commit policy. ``partition-time`` additionally requires
+        upstream watermarks and a partition time extractor, configured via ``connector_options``.
+        For a TIMESTAMP_LTZ watermark, set ``sink.partition-commit.watermark-time-zone`` in
+        ``connector_options`` to the session time zone; its default is UTC.
+
+        :param path: Output directory URI supported by Flink's filesystem implementations.
+        :param mode: ``"append"`` (default) adds files; ``"overwrite"`` replaces existing data
+            in batch execution only.
+        :param partition_by: Partition column name or non-empty list of names in directory order.
+            Values are stored in Hive-style partition paths rather than in the Parquet records.
+        :param compression: Parquet compression codec. The format default is currently
+            ``"SNAPPY"``.
+        :param utc_timezone: Use UTC for Parquet timestamp conversion. The format default is
+            currently ``False``, which uses the JVM default time zone, independently of the
+            session time zone.
+        :param sink_parallelism: Sink parallelism. The connector default is the upstream
+            parallelism.
+        :param sink_shuffle_by_partition: Shuffle rows by dynamic partition fields before writing.
+            This can reduce the number of files but may cause data skew. The connector default
+            is currently ``False``.
+        :param auto_compaction: Automatically compact files in streaming execution after
+            checkpoints complete. Files remain invisible until compaction finishes. The connector
+            default is currently ``False``.
+        :param compaction_file_size: Target file size for automatic compaction, for example
+            ``"128mb"``. The connector default is the rolling policy file size.
+        :param rolling_policy_file_size: Part file size threshold for rolling, not a hard upper
+            bound. The connector default is currently ``"128mb"``.
+        :param rolling_policy_rollover_interval: Part file open-time threshold. The connector
+            default is currently ``"30min"``.
+        :param rolling_policy_inactivity_interval: Part file inactivity threshold. The connector
+            default is currently ``"30min"``.
+        :param rolling_policy_check_interval: Interval for checking time-based rolling policies.
+            The connector default is currently ``"1min"``.
+        :param partition_commit_trigger: Partition commit trigger: ``"process-time"`` or
+            ``"partition-time"``. The connector default is currently ``"process-time"``.
+        :param partition_commit_delay: Delay before committing a partition. The connector
+            default is currently ``"0s"``.
+        :param partition_commit_policy_kind: Optional comma-separated policies, such as
+            ``"success-file"`` or ``"custom"``. The ``metastore`` policy requires a Hive table.
+        :param connector_options: Additional filesystem options with string keys and values.
+            The ``connector``, ``path`` and ``format`` keys are reserved. Format options belong in
+            ``format_options``. Explicit parameter and dictionary values must agree when both
+            are set. Unspecified options are left to the connector factory.
+        :param format_options: Parquet options with string values, with or without the
+            ``parquet.`` prefix. Duplicate normalized keys are rejected. ``None`` parameters
+            leave dictionary values unchanged; conflicting explicit values are rejected.
+            For INT64 timestamp encoding, use ``{"write.int64.timestamp": "true",
+            "timestamp.time.unit": "micros"}``. The default encoding is INT96.
+        :raises TypeError: If an argument has an invalid type.
+        :raises ValueError: If the path is empty, the write mode is unsupported, the partition
+            specification is empty or contains empty or duplicate names, or options conflict
+            or contain reserved, empty or duplicate keys.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> _ = pf.config.set("execution.runtime-mode", "batch")
+            >>> events = pf.from_records([(1, "login")], schema=["id", "event"])
+            >>> events.write_parquet("file:///tmp/events", compression="GZIP")
+
+        .. versionadded:: 2.4.0
+        """
+        from pyflink.dataframe.io import (
+            _boolean_option,
+            _build_filesystem_options,
+            _parallelism_option,
+        )
+
+        options = _build_filesystem_options(
+            path,
+            "parquet",
+            connector_parameters={
+                "sink.parallelism": _parallelism_option(sink_parallelism),
+                "sink.shuffle-by-partition.enable": _boolean_option(
+                    sink_shuffle_by_partition, "sink_shuffle_by_partition"),
+                "auto-compaction": _boolean_option(auto_compaction, "auto_compaction"),
+                "compaction.file-size": compaction_file_size,
+                "sink.rolling-policy.file-size": rolling_policy_file_size,
+                "sink.rolling-policy.rollover-interval": rolling_policy_rollover_interval,
+                "sink.rolling-policy.inactivity-interval": rolling_policy_inactivity_interval,
+                "sink.rolling-policy.check-interval": rolling_policy_check_interval,
+                "sink.partition-commit.trigger": partition_commit_trigger,
+                "sink.partition-commit.delay": partition_commit_delay,
+                "sink.partition-commit.policy.kind": partition_commit_policy_kind,
+            },
+            format_parameters={
+                "compression": compression,
+                "utc-timezone": _boolean_option(utc_timezone, "utc_timezone"),
+            },
+            extra_connector_options=connector_options,
+            extra_format_options=format_options,
+        )
+        self._write("filesystem", options, mode=mode, partition_by=partition_by)
+
+    @PublicEvolving()
+    def write_json(
+        self,
+        path: str,
+        *,
+        mode: str = "append",
+        partition_by: Optional[Union[str, List[str]]] = None,
+        timestamp_format: Optional[str] = None,
+        ignore_null_fields: Optional[bool] = None,
+        decimal_as_plain_number: Optional[bool] = None,
+        sink_parallelism: Optional[int] = None,
+        sink_shuffle_by_partition: Optional[bool] = None,
+        auto_compaction: Optional[bool] = None,
+        compaction_file_size: Optional[str] = None,
+        rolling_policy_file_size: Optional[str] = None,
+        rolling_policy_rollover_interval: Optional[str] = None,
+        rolling_policy_inactivity_interval: Optional[str] = None,
+        rolling_policy_check_interval: Optional[str] = None,
+        partition_commit_trigger: Optional[str] = None,
+        partition_commit_delay: Optional[str] = None,
+        partition_commit_policy_kind: Optional[str] = None,
+        connector_options: Optional[Dict[str, str]] = None,
+        format_options: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Write newline-delimited JSON files using Flink's filesystem connector.
+
+        The filesystem connector and JSON format must be available to Flink. The write
+        is submitted immediately and waits for completion for local or MiniCluster execution.
+        Sink columns are derived from this DataFrame's schema. Writes default to append in both
+        batch and streaming execution. Explicit overwrite requires batch execution and is rejected
+        by the filesystem connector in streaming execution. Partitioned overwrite replaces only
+        partitions present in the input, retaining other partitions.
+
+        Optional connector and format parameters use ``None`` to leave the option unspecified.
+        If neither a parameter nor its dictionary option is set, the connector or format factory
+        supplies the default.
+
+        Rolling policies apply to streaming sinks. Continuous writes require both file rolling
+        and checkpointing to finish files. With automatic compaction, files also roll on
+        checkpoints. Partition commit in streaming requires ``partition_by``
+        and a commit policy. ``partition-time`` additionally requires upstream watermarks and a
+        partition time extractor, configured via ``connector_options``.
+        For a TIMESTAMP_LTZ watermark, set ``sink.partition-commit.watermark-time-zone`` in
+        ``connector_options`` to the session time zone; its default is UTC.
+
+        :param path: Output directory URI supported by Flink's filesystem implementations.
+        :param mode: ``"append"`` (default) adds files; ``"overwrite"`` replaces existing data
+            in batch execution only.
+        :param partition_by: Partition column name or non-empty list of names in directory order.
+            Values are stored in Hive-style partition paths rather than in the JSON records.
+        :param timestamp_format: Timestamp representation, ``"SQL"`` or ``"ISO-8601"``.
+            The format default is currently ``"SQL"``.
+        :param ignore_null_fields: Omit fields with null values from JSON objects. The format
+            default is currently ``False``. This does not control Map entries with null keys;
+            configure ``map-null-key.mode`` through ``format_options`` for those entries.
+        :param decimal_as_plain_number: Encode DECIMAL values as plain numbers rather than
+            scientific notation, retaining JSON numeric values. The format default is currently
+            ``False``.
+        :param sink_parallelism: Sink parallelism. The connector default is the upstream
+            parallelism.
+        :param sink_shuffle_by_partition: Shuffle rows by dynamic partition fields before writing.
+            This can reduce the number of files but may cause data skew. The connector default
+            is currently ``False``.
+        :param auto_compaction: Automatically compact files in streaming execution after
+            checkpoints complete. Files remain invisible until compaction finishes. The connector
+            default is currently ``False``.
+        :param compaction_file_size: Target file size for automatic compaction, for example
+            ``"128mb"``. The connector default is the rolling policy file size.
+        :param rolling_policy_file_size: Part file size threshold for rolling, not a hard upper
+            bound. The connector default is currently ``"128mb"``.
+        :param rolling_policy_rollover_interval: Part file open-time threshold. The connector
+            default is currently ``"30min"``.
+        :param rolling_policy_inactivity_interval: Part file inactivity threshold. The connector
+            default is currently ``"30min"``.
+        :param rolling_policy_check_interval: Interval for checking time-based rolling policies.
+            The connector default is currently ``"1min"``.
+        :param partition_commit_trigger: Partition commit trigger: ``"process-time"`` or
+            ``"partition-time"``. The connector default is currently ``"process-time"``.
+        :param partition_commit_delay: Delay before committing a partition. The connector
+            default is currently ``"0s"``.
+        :param partition_commit_policy_kind: Optional comma-separated policies, such as
+            ``"success-file"`` or ``"custom"``. The ``metastore`` policy requires a Hive table.
+        :param connector_options: Additional filesystem options with string keys and values.
+            The ``connector``, ``path`` and ``format`` keys are reserved. Format options belong in
+            ``format_options``. Explicit parameter and dictionary values must agree when both
+            are set. Unspecified options are left to the connector factory.
+        :param format_options: JSON format options with string values. Keys may include or omit
+            the ``json.`` prefix, for example ``{"timestamp-format.standard": "ISO-8601"}``.
+            ``None`` parameters leave dictionary values unchanged; conflicting explicit values
+            are rejected.
+        :raises TypeError: If an argument has an invalid type.
+        :raises ValueError: If the path is empty, the write mode is unsupported, the partition
+            specification is empty or contains empty or duplicate names, or options conflict
+            or contain reserved, empty or duplicate keys.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> events = pf.from_records([(1, "login")], schema=["id", "event"])
+            >>> events.write_json("file:///tmp/events")
+
+        .. versionadded:: 2.4.0
+        """
+        from pyflink.dataframe.io import (
+            _boolean_option,
+            _build_filesystem_options,
+            _parallelism_option,
+        )
+
+        options = _build_filesystem_options(
+            path,
+            "json",
+            connector_parameters={
+                "sink.parallelism": _parallelism_option(sink_parallelism),
+                "sink.shuffle-by-partition.enable": _boolean_option(
+                    sink_shuffle_by_partition, "sink_shuffle_by_partition"),
+                "auto-compaction": _boolean_option(auto_compaction, "auto_compaction"),
+                "compaction.file-size": compaction_file_size,
+                "sink.rolling-policy.file-size": rolling_policy_file_size,
+                "sink.rolling-policy.rollover-interval": rolling_policy_rollover_interval,
+                "sink.rolling-policy.inactivity-interval": rolling_policy_inactivity_interval,
+                "sink.rolling-policy.check-interval": rolling_policy_check_interval,
+                "sink.partition-commit.trigger": partition_commit_trigger,
+                "sink.partition-commit.delay": partition_commit_delay,
+                "sink.partition-commit.policy.kind": partition_commit_policy_kind,
+            },
+            format_parameters={
+                "timestamp-format.standard": timestamp_format,
+                "encode.ignore-null-fields": _boolean_option(
+                    ignore_null_fields, "ignore_null_fields"),
+                "encode.decimal-as-plain-number": _boolean_option(
+                    decimal_as_plain_number, "decimal_as_plain_number"),
+            },
+            extra_connector_options=connector_options,
+            extra_format_options=format_options,
+        )
+        self._write("filesystem", options, mode=mode, partition_by=partition_by)
+
+    @PublicEvolving()
     def write_generic(self, connector: str, *, options: Dict[str, str]) -> None:
         """
         Write this DataFrame using a connector and its raw Table connector options.
@@ -832,8 +2085,8 @@ class DataFrame:
         :param connector: Factory identifier used as the ``connector`` Table option.
         :param options: Connector options, excluding the reserved ``connector`` option.
         :raises TypeError: If an argument has an invalid type.
-        :raises ValueError: If the connector or an option key is empty, or if ``options`` contains
-            the reserved ``connector`` key.
+        :raises ValueError: If the connector or an option key is empty, if ``options`` contains
+            the reserved ``connector`` key, or if Flink rejects the connector or its options.
 
         Example::
 
@@ -849,10 +2102,72 @@ class DataFrame:
 
         .. versionadded:: 2.4.0
         """
+        self._write(connector, options)
+
+    def _write(
+        self,
+        connector: str,
+        options: Dict[str, str],
+        *,
+        mode: str = "append",
+        partition_by: Optional[Union[str, List[str]]] = None,
+    ) -> None:
+        from pyflink.dataframe.errors import _raise_as_value_error
         from pyflink.dataframe.io import _build_generic_descriptor
 
-        descriptor = _build_generic_descriptor(connector, options)
-        result = self._table.execute_insert(descriptor)
+        if not isinstance(mode, str):
+            raise TypeError("mode must be a string")
+        if mode not in ("append", "overwrite"):
+            raise ValueError("mode must be 'append' or 'overwrite'")
+        descriptor = _build_generic_descriptor(connector, options, partition_by=partition_by)
+        try:
+            self._execute_insert(descriptor, mode == "overwrite")
+        except Exception as error:
+            _raise_as_value_error(error)
+
+    @PublicEvolving()
+    def write_catalog_table(self, path: str, *, overwrite: bool = False) -> None:
+        """
+        Write this DataFrame to a table registered in a catalog.
+
+        ``path`` is ``table_name``, ``db_name.table_name``, or ``catalog_name.db_name.table_name``.
+        Missing parts are resolved against the current catalog and database, see
+        :func:`~pyflink.dataframe.use_catalog` and :func:`~pyflink.dataframe.use_database`. The
+        write runs right away. On a local or MiniCluster setup the call blocks until the write is
+        done.
+
+        :param path: Path of the catalog table.
+        :param overwrite: Whether existing data should be replaced, like ``INSERT OVERWRITE``.
+            Not every connector supports overwriting.
+        :raises TypeError: If ``path`` is not a string or ``overwrite`` is not a bool.
+        :raises ValueError: If ``path`` is empty, malformed, or does not name a table, or if the
+            DataFrame's columns do not match the table.
+
+        Example::
+
+            >>> import pyflink.dataframe as pf
+            >>> events = pf.from_records([(1, "login")], schema=["id", "event"])
+            >>> events.write_catalog_table("my_catalog.my_database.events")
+            >>> pf.use_catalog("my_catalog")
+            >>> events.write_catalog_table("my_database.events", overwrite=True)
+
+        .. versionadded:: 2.4.0
+        """
+        from pyflink.dataframe.catalog import _validate_name
+        from pyflink.dataframe.errors import _raise_as_value_error
+
+        _validate_name(path, "path")
+        if not isinstance(overwrite, bool):
+            raise TypeError("overwrite must be a bool")
+        try:
+            self._execute_insert(path, overwrite)
+        except Exception as error:
+            _raise_as_value_error(error)
+
+    def _execute_insert(
+        self, target: Union[str, TableDescriptor], overwrite: bool = False
+    ) -> None:
+        result = self._table.execute_insert(target, overwrite=overwrite)
         execution_target = self._table._t_env.get_config().get(
             "execution.target", None
         )
@@ -914,23 +2229,343 @@ class GroupedDataFrame:
 # ======================== Internal Helpers ========================
 
 
-def _normalize_subset(subset: Union[str, List[str], None]) -> Optional[List[str]]:
+def _normalize_join_type(how: str) -> str:
+    if not isinstance(how, str):
+        raise TypeError("how must be a string")
+    aliases = {
+        "inner": "inner",
+        "left": "left",
+        "right": "right",
+        "full": "full",
+        "outer": "full",
+        "semi": "semi",
+        "anti": "anti",
+        "cross": "cross",
+    }
+    if how not in aliases:
+        raise ValueError(
+            'how must be one of "inner", "left", "right", "full", "outer", '
+            '"semi", "anti", or "cross"'
+        )
+    return aliases[how]
+
+
+def _normalize_join_keys(value, parameter_name: str) -> List[Union[str, Expression]]:
+    if isinstance(value, (str, Expression)):
+        return [value]
+    if isinstance(value, list):
+        if not value:
+            raise ValueError("%s must not be empty" % parameter_name)
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError(
+                "%s must be a string, an expression, or a list of strings" % parameter_name
+            )
+        if len(set(value)) != len(value):
+            raise ValueError("%s must not contain duplicate column names" % parameter_name)
+        return value
+    raise TypeError(
+        "%s must be a string, an expression, or a list of strings" % parameter_name
+    )
+
+
+def _validate_join_columns(
+    keys: List[Union[str, Expression]], columns: List[str], parameter_name: str
+) -> None:
+    for key in keys:
+        if isinstance(key, str) and key not in columns:
+            raise ValueError(
+                "%s column '%s' does not exist, available columns: %s"
+                % (parameter_name, key, columns)
+            )
+
+
+def _validate_join_column_conflicts(
+    left_columns: List[str], right_columns: List[str], shared_keys: Set[str]
+) -> None:
+    conflicts = sorted((set(left_columns) & set(right_columns)) - shared_keys)
+    if conflicts:
+        raise ValueError(
+            "join() found duplicate non-key columns %s; rename them with rename_columns() "
+            "before joining" % conflicts
+        )
+
+
+def _prepare_join(
+    left_table: Table,
+    right_table: Table,
+    on,
+    left_on,
+    right_on,
+    *,
+    validate_column_conflicts: bool,
+) -> Tuple[Table, Table, Expression, Dict[str, str]]:
+    left_columns = list(left_table.get_resolved_schema().get_column_names())
+    right_columns = list(right_table.get_resolved_schema().get_column_names())
+
+    if on is not None:
+        if left_on is not None or right_on is not None:
+            raise ValueError("on cannot be combined with left_on or right_on")
+        if isinstance(on, Expression):
+            if validate_column_conflicts:
+                _validate_join_column_conflicts(left_columns, right_columns, set())
+            return left_table, right_table, on, {}
+        left_keys = _normalize_join_keys(on, "on")
+        right_keys = list(left_keys)
+        _validate_join_columns(left_keys, left_columns, "on")
+        _validate_join_columns(right_keys, right_columns, "on")
+    else:
+        if left_on is None and right_on is None:
+            raise ValueError("join() requires on or both left_on and right_on")
+        if left_on is None or right_on is None:
+            raise ValueError("left_on and right_on must be provided together")
+        left_keys = _normalize_join_keys(left_on, "left_on")
+        right_keys = _normalize_join_keys(right_on, "right_on")
+        if len(left_keys) != len(right_keys):
+            raise ValueError("left_on and right_on must have the same number of keys")
+        _validate_join_columns(left_keys, left_columns, "left_on")
+        _validate_join_columns(right_keys, right_columns, "right_on")
+
+    shared_names = {
+        left_key
+        for left_key, right_key in zip(left_keys, right_keys)
+        if isinstance(left_key, str)
+        and isinstance(right_key, str)
+        and left_key == right_key
+    }
+    if validate_column_conflicts:
+        _validate_join_column_conflicts(left_columns, right_columns, shared_names)
+
+    taken = set(left_columns) | set(right_columns)
+    shared_keys: Dict[str, str] = {}
+    right_rename_expressions: List[Expression] = []
+    for name in left_columns:
+        if name in shared_names:
+            temporary_name = _unique_name("__pf_join_right_%s" % name, taken)
+            taken.add(temporary_name)
+            shared_keys[name] = temporary_name
+            right_rename_expressions.append(table_col(name).alias(temporary_name))
+    left_key_names: List[str] = []
+    right_key_names: List[str] = []
+    left_computed_keys: List[Expression] = []
+    right_computed_keys: List[Expression] = []
+    for index, (left_key, right_key) in enumerate(zip(left_keys, right_keys)):
+        if isinstance(left_key, str):
+            left_key_names.append(left_key)
+        else:
+            temporary_name = _unique_name("__pf_join_left_key_%d" % index, taken)
+            taken.add(temporary_name)
+            left_key_names.append(temporary_name)
+            left_computed_keys.append(left_key.alias(temporary_name))
+
+        if isinstance(right_key, str):
+            right_key_names.append(shared_keys.get(right_key, right_key))
+        else:
+            temporary_name = _unique_name("__pf_join_right_key_%d" % index, taken)
+            taken.add(temporary_name)
+            right_key_names.append(temporary_name)
+            right_computed_keys.append(right_key.alias(temporary_name))
+
+    if left_computed_keys:
+        left_table = left_table.add_columns(*left_computed_keys)
+    if right_computed_keys:
+        right_table = right_table.add_columns(*right_computed_keys)
+    if right_rename_expressions:
+        right_table = right_table.rename_columns(*right_rename_expressions)
+
+    conditions = [
+        table_col(left_name) == table_col(right_name)
+        for left_name, right_name in zip(left_key_names, right_key_names)
+    ]
+    predicate = conditions[0] if len(conditions) == 1 else and_(*conditions)
+    return (
+        left_table,
+        right_table,
+        predicate,
+        shared_keys,
+    )
+
+
+class _JoinSqlFactory:
+    """Keep inline UDFs registered until the join SQL has been resolved."""
+
+    def __init__(self, t_env: "TableEnvironment"):
+        self._t_env = t_env
+        self._functions: Dict[Any, str] = {}
+        self._taken_names: Optional[Set[str]] = None
+        self._cleanup = ExitStack()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._cleanup.__exit__(*exc_info)
+
+    def serializeInlineFunction(self, definition):
+        if definition not in self._functions:
+            if self._taken_names is None:
+                self._taken_names = {name.lower() for name in self._t_env.list_functions()}
+            name = _unique_name("__pf_join_udf", self._taken_names)
+            self._t_env._j_tenv.createTemporarySystemFunction(name, definition)
+            self._cleanup.callback(self._t_env.drop_temporary_system_function, name)
+            self._taken_names.add(name)
+            self._functions[definition] = name
+        return _quote_identifier(self._functions[definition])
+
+    class Java:
+        implements = ["org.apache.flink.table.expressions.SqlFactory"]
+
+
+def _serialize_join_predicate(
+    left_table: Table,
+    right_table: Table,
+    predicate: Expression,
+    sql_factory: _JoinSqlFactory,
+) -> Tuple[str, str, str]:
+    left_alias, right_alias = "__pf_join_left", "__pf_join_right"
+    operation_tree_builder = (
+        left_table._j_table.getTableEnvironment().getOperationTreeBuilder()
+    )
+    gateway = get_gateway()
+    query_operations = to_jarray(
+        gateway.jvm.org.apache.flink.table.operations.QueryOperation,
+        [
+            left_table._j_table.getQueryOperation(),
+            right_table._j_table.getQueryOperation(),
+        ],
+    )
+    resolved_predicate = operation_tree_builder.resolveExpression(
+        _get_java_expression(predicate), query_operations
+    )
+
+    aliases = gateway.jvm.java.util.HashMap()
+    aliases.put(0, left_alias)
+    aliases.put(1, right_alias)
+    operation_expression_utils = (
+        gateway.jvm.org.apache.flink.table.operations.utils.OperationExpressionsUtils
+    )
+    predicate_sql = operation_expression_utils.scopeReferencesWithAlias(
+        aliases, resolved_predicate
+    ).asSerializableString(sql_factory)
+    return left_alias, right_alias, predicate_sql
+
+
+def _build_regular_join_sql(
+    left_table: Table,
+    right_table: Table,
+    predicate: Expression,
+    left_output_columns: List[str],
+    right_output_columns: List[str],
+    shared_keys: Dict[str, str],
+    join_type: str,
+    sql_factory: _JoinSqlFactory,
+) -> Table:
+    left_alias, right_alias, predicate_sql = _serialize_join_predicate(
+        left_table, right_table, predicate, sql_factory
+    )
+    left_alias_sql = _quote_identifier(left_alias)
+    right_alias_sql = _quote_identifier(right_alias)
+
+    projections = []
+    for name in left_output_columns:
+        left_field = "%s.%s" % (left_alias_sql, _quote_identifier(name))
+        if name in shared_keys and join_type in ("right", "full"):
+            right_field = "%s.%s" % (
+                right_alias_sql,
+                _quote_identifier(shared_keys[name]),
+            )
+            expression = (
+                right_field
+                if join_type == "right"
+                else "COALESCE(%s, %s)" % (left_field, right_field)
+            )
+        else:
+            expression = left_field
+        projections.append("%s AS %s" % (expression, _quote_identifier(name)))
+    projections.extend(
+        "%s.%s AS %s"
+        % (right_alias_sql, _quote_identifier(name), _quote_identifier(name))
+        for name in right_output_columns
+        if name not in shared_keys
+    )
+
+    join_keyword = {
+        "inner": "INNER JOIN",
+        "left": "LEFT OUTER JOIN",
+        "right": "RIGHT OUTER JOIN",
+        "full": "FULL OUTER JOIN",
+    }[join_type]
+    query = (
+        "SELECT %s FROM %s AS %s %s %s AS %s ON %s"
+        % (
+            ", ".join(projections),
+            _quote_identifier(str(left_table)),
+            left_alias_sql,
+            join_keyword,
+            _quote_identifier(str(right_table)),
+            right_alias_sql,
+            predicate_sql,
+        )
+    )
+    return left_table._t_env.sql_query(query)
+
+
+def _build_semi_anti_join_sql(
+    left_table: Table,
+    right_table: Table,
+    predicate: Expression,
+    output_columns: List[str],
+    join_type: str,
+    sql_factory: _JoinSqlFactory,
+) -> Table:
+    left_alias, right_alias, predicate_sql = _serialize_join_predicate(
+        left_table, right_table, predicate, sql_factory
+    )
+    left_alias_sql = _quote_identifier(left_alias)
+    right_alias_sql = _quote_identifier(right_alias)
+    select_list = ", ".join(
+        "%s.%s" % (left_alias_sql, _quote_identifier(name)) for name in output_columns
+    )
+    left_source_sql = _quote_identifier(str(left_table))
+    right_source_sql = _quote_identifier(str(right_table))
+    existence_predicate = {"semi": "EXISTS", "anti": "NOT EXISTS"}[join_type]
+    query = (
+        "SELECT %s FROM %s AS %s WHERE %s ("
+        "SELECT 1 FROM %s AS %s WHERE %s)"
+        % (
+            select_list,
+            left_source_sql,
+            left_alias_sql,
+            existence_predicate,
+            right_source_sql,
+            right_alias_sql,
+            predicate_sql,
+        )
+    )
+    return left_table._t_env.sql_query(query)
+
+
+def _normalize_subset(
+    subset: Union[str, List[str], None], parameter_name: str = "subset"
+) -> Optional[List[str]]:
     if subset is None:
         return None
     if isinstance(subset, str):
         return [subset]
     if isinstance(subset, (list, tuple)):
         if not subset:
-            raise ValueError("subset must not be empty")
+            raise ValueError("%s must not be empty" % parameter_name)
         for name in subset:
             if not isinstance(name, str):
-                raise TypeError("subset must be a string or a list of strings")
+                raise TypeError(
+                    "%s must be a string or a list of strings" % parameter_name
+                )
         return list(subset)
-    raise TypeError("subset must be a string or a list of strings")
+    raise TypeError("%s must be a string or a list of strings" % parameter_name)
 
 
 def _normalize_order_by(
     order_by: Union[str, Expression, List[Union[str, Expression]], None],
+    parameter_name: str = "order_by",
 ) -> Optional[List[Union[str, Expression]]]:
     if order_by is None:
         return None
@@ -942,13 +2577,28 @@ def _normalize_order_by(
             keys.append(value)
         else:
             raise TypeError(
-                "order_by must be a string, an expression, or a list or tuple of them"
+                "%s must be a string, an expression, or a list or tuple of them" % parameter_name
             )
 
     if not keys:
-        raise ValueError("order_by must not be empty")
+        raise ValueError("%s must not be empty" % parameter_name)
 
     return keys
+
+
+def _contains_ordering_expression(expression: Expression) -> bool:
+    gateway = get_gateway()
+    api_expression_utils = gateway.jvm.org.apache.flink.table.expressions.ApiExpressionUtils
+    built_in_functions = gateway.jvm.org.apache.flink.table.functions.BuiltInFunctionDefinitions
+
+    def contains_ordering(j_expression) -> bool:
+        if api_expression_utils.isFunction(
+            j_expression, built_in_functions.ORDER_ASC
+        ) or api_expression_utils.isFunction(j_expression, built_in_functions.ORDER_DESC):
+            return True
+        return any(contains_ordering(child) for child in j_expression.getChildren())
+
+    return contains_ordering(expression._j_expr.toExpr())
 
 
 def _normalize_nulls_first(
@@ -968,63 +2618,97 @@ def _normalize_nulls_first(
         raise TypeError("nulls_first must be a boolean or a list of booleans")
 
     if len(values) != order_len:
-        raise ValueError("nulls_first must have the same length as order_by")
+        raise ValueError("nulls_first must have the same length as the sort keys")
 
     return values
 
 
-def _build_deduplication_query(
-    table: Table,
-    columns: List[str],
-    subset_keys: List[str],
-    order_keys: Optional[List[Union[str, Expression]]],
-    keep: str,
-    nulls: Optional[List[bool]],
-) -> Table:
-    direction = "DESC" if keep == "last" else "ASC"
+def _normalize_descending(descending, order_len):
+    if isinstance(descending, bool):
+        return [descending] * order_len
+    if isinstance(descending, (list, tuple)):
+        if len(descending) != order_len:
+            raise ValueError("descending must have the same length as the sort keys")
+        if not all(isinstance(v, bool) for v in descending):
+            raise TypeError("descending must be a boolean or a list of booleans")
+        return list(descending)
+    raise TypeError("descending must be a boolean or a list of booleans")
+
+
+def _build_sort_sql(table, order_keys, descending_flags, nulls) -> Table:
+    columns = table.get_resolved_schema().get_column_names()
+    taken = set(columns)
+    order_terms = []
+    for index, key in enumerate(order_keys):
+        direction = "DESC" if descending_flags[index] else "ASC"
+        if isinstance(key, str):
+            if key not in columns:
+                raise ValueError(
+                    "by column '%s' does not exist, available columns: %s" % (key, columns)
+                )
+            expression_sql = _quote_identifier(key)
+        else:
+            name = _unique_name("__pf_order_%d" % index, taken)
+            taken.add(name)
+            table = table.add_columns(key.alias(name))
+            expression_sql = _quote_identifier(name)
+        term = "%s %s" % (expression_sql, direction)
+        if nulls[index] is not None:
+            term += " NULLS FIRST" if nulls[index] else " NULLS LAST"
+        order_terms.append(term)
+
+    select_list = ", ".join(_quote_identifier(name) for name in columns)
+    query = "SELECT %s FROM %s ORDER BY %s" % (
+        select_list,
+        _quote_identifier(str(table)),
+        ", ".join(order_terms),
+    )
+    return table._t_env.sql_query(query)
+
+
+def _build_rank_sql(table, partition_keys, order_keys, descending_flags, nulls, n) -> Table:
+    columns = table.get_resolved_schema().get_column_names()
+    for name in partition_keys:
+        if name not in columns:
+            raise ValueError(
+                "partition_by column '%s' does not exist, available columns: %s" % (name, columns))
     taken = set(columns)
 
-    if order_keys is None:
-        # Arrival order (processing time); keep decides its direction.
-        order_terms = ["PROCTIME() " + direction]
-    else:
-        order_terms = []
-        for index, key in enumerate(order_keys):
-            if isinstance(key, str):
-                if key not in columns:
-                    raise ValueError(
-                        "order_by column '%s' does not exist, available columns: %s"
-                        % (key, columns)
-                    )
-                name = key
-            else:
-                # An Expression cannot be rendered to SQL text, so materialize it as a helper
-                # column and reference it by name.
-                name = _unique_name("__pf_order_%d" % index, taken)
-                taken.add(name)
-                table = table.add_columns(key.alias(name))
-            term = _quote_identifier(name) + " " + direction
-            if nulls is not None:
-                term += " NULLS FIRST" if nulls[index] else " NULLS LAST"
-            order_terms.append(term)
+    order_terms = []
+    for index, key in enumerate(order_keys):
+        direction = "DESC" if descending_flags[index] else "ASC"
+        if key is None:
+            expr_sql = "PROCTIME()"
+        elif isinstance(key, str):
+            if key not in columns:
+                raise ValueError(
+                    "order_by column '%s' does not exist, available columns: %s" % (key, columns))
+            expr_sql = _quote_identifier(key)
+        else:
+            name = _unique_name("__pf_order_%d" % index, taken)
+            taken.add(name)
+            table = table.add_columns(key.alias(name))
+            expr_sql = _quote_identifier(name)
+        term = expr_sql + " " + direction
+        if nulls is not None and nulls[index] is not None:
+            term += " NULLS FIRST" if nulls[index] else " NULLS LAST"
+        order_terms.append(term)
 
     rank_column = _quote_identifier(_unique_name("__pf_row_number", taken))
     source = _quote_identifier(str(table))
     select_list = ", ".join(_quote_identifier(name) for name in columns)
-    partition_by = ", ".join(_quote_identifier(name) for name in subset_keys)
+    over_clause = "ORDER BY " + ", ".join(order_terms)
+    if partition_keys:
+        over_clause = (
+            "PARTITION BY %s " % ", ".join(_quote_identifier(k) for k in partition_keys)
+        ) + over_clause
+    rank_filter = "= 1" if n == 1 else "<= %d" % n
     query = (
         "SELECT %s FROM (\n"
-        "  SELECT *, ROW_NUMBER() OVER (PARTITION BY %s ORDER BY %s) AS %s\n"
+        "  SELECT *, ROW_NUMBER() OVER (%s) AS %s\n"
         "  FROM %s\n"
-        ") WHERE %s = 1"
-        % (
-            select_list,
-            partition_by,
-            ", ".join(order_terms),
-            rank_column,
-            source,
-            rank_column,
-        )
+        ") WHERE %s %s"
+        % (select_list, over_clause, rank_column, source, rank_column, rank_filter)
     )
     return table._t_env.sql_query(query)
 
@@ -1038,6 +2722,80 @@ def _unique_name(base: str, taken: Set[str]) -> str:
 
 def _quote_identifier(name: str) -> str:
     return "`" + name.replace("`", "``") + "`"
+
+
+def _resolve_window_time_column(on: Union[str, Expression]) -> Expression:
+    if isinstance(on, str):
+        return table_col(on)
+    if isinstance(on, Expression):
+        return on
+    raise TypeError("on must be a column name or expression")
+
+
+def _resolve_partition_columns(
+    partition_by: Optional[Union[str, Expression, List[Union[str, Expression]]]]
+) -> List[Expression]:
+    if partition_by is None:
+        return []
+    if isinstance(partition_by, (str, Expression)):
+        candidates: List[Union[str, Expression]] = [partition_by]
+    else:
+        candidates = partition_by
+    columns: List[Expression] = []
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            columns.append(table_col(candidate))
+        elif isinstance(candidate, Expression):
+            columns.append(candidate)
+        else:
+            raise TypeError(
+                "partition_by must be a column name, expression, or a list of them"
+            )
+    return columns
+
+
+def _window_dataframe(
+    table: Table,
+    window_kind: str,
+    time_col: Expression,
+    *interval_exprs: Any,
+    partition_cols: List[Expression] = [],
+) -> "DataFrame":
+    jvm = get_gateway().jvm
+    kind = getattr(
+        jvm.org.apache.flink.table.operations.WindowTableFunctionQueryOperation.WindowKind,
+        window_kind,
+    )
+    intervals = jvm.java.util.ArrayList()
+    for interval in interval_exprs:
+        intervals.add(interval)
+    partition_list = jvm.java.util.ArrayList()
+    for partition_col in partition_cols:
+        partition_list.add(partition_col._j_expr)
+    operation_tree_builder = table._t_env._j_tenv.getOperationTreeBuilder()
+    window_op = operation_tree_builder.windowTableFunction(
+        kind,
+        time_col._j_expr,
+        intervals,
+        partition_list,
+        table._j_table.getQueryOperation(),
+    )
+    j_table = table._t_env._j_tenv.createTable(window_op)
+    return DataFrame(Table(j_table, table._t_env))
+
+
+def _to_interval_expression(value: Union["datetime.timedelta", Expression]) -> Any:
+    if isinstance(value, datetime.timedelta):
+        millis = value // datetime.timedelta(milliseconds=1)
+        return (
+            get_gateway()
+            .jvm.org.apache.flink.table.expressions.ApiExpressionUtils.intervalOfMillis(
+                millis
+            )
+        )
+    if isinstance(value, Expression):
+        return value._j_expr
+    raise TypeError("interval must be a datetime.timedelta or Expression")
 
 
 def _normalize_aggregations(

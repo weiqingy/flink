@@ -36,6 +36,8 @@ import org.apache.flink.runtime.io.network.partition.CheckpointedResultPartition
 import org.apache.flink.runtime.io.network.partition.consumer.InputChannel;
 import org.apache.flink.runtime.io.network.partition.consumer.InputGate;
 import org.apache.flink.runtime.io.network.partition.consumer.RecoveredInputChannel;
+import org.apache.flink.util.FileUtils;
+import org.apache.flink.util.IOUtils;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -414,6 +416,18 @@ abstract class AbstractSpillingHandler extends AbstractInputChannelRecoveredStat
     }
 
     /**
+     * Deletes the spill directory with everything written so far, whether or not {@link
+     * #closeInternal()} has built {@link #producedChannelState}. Best-effort, never throws.
+     */
+    void discardSpilledFiles() {
+        IOUtils.closeQuietly(currentStream);
+        currentStream = null;
+        // Marks the state closed for anyone still holding it before the directory goes away.
+        IOUtils.closeQuietly(producedChannelState);
+        FileUtils.deleteDirectoryQuietly(baseDir.toFile());
+    }
+
+    /**
      * Seals the open segment and the file stream, then builds the {@link FetchedChannelState}
      * handoff from the written files. Produces nothing if no bytes were ever spilled.
      */
@@ -574,12 +588,16 @@ class SpillingWithFilteringHandler extends AbstractSpillingHandler {
         Buffer buffer = bufferWithContext.context;
         try {
             if (buffer.readableBytes() > 0) {
+                // Resolve the target serializer before retaining, so a failure here cannot leak
+                // the retained buffer reference.
+                DataOutputSerializer serializer =
+                        segmentSerializerFor(getMappedChannels(channelInfo).getChannelInfo());
                 filteringHandler.filterAndRewrite(
                         channelInfo.getGateIdx(),
                         oldSubtaskIndex,
                         channelInfo.getInputChannelIdx(),
                         buffer.retainBuffer(),
-                        segmentSerializerFor(getMappedChannels(channelInfo).getChannelInfo()));
+                        serializer);
             }
         } finally {
             buffer.recycleBuffer();

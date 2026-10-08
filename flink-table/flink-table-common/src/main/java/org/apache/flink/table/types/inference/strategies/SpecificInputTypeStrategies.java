@@ -109,6 +109,13 @@ public final class SpecificInputTypeStrategies {
     public static final ArgumentTypeStrategy ARRAY_FULLY_COMPARABLE =
             new ArrayComparableElementArgumentTypeStrategy(StructuredComparison.FULL);
 
+    /** See {@link ArrayOfEntriesArgumentTypeStrategy}. */
+    public static final ArgumentTypeStrategy ARRAY_OF_ENTRIES_ARG =
+            new ArrayOfEntriesArgumentTypeStrategy();
+
+    /** Argument type derived from the map key type. */
+    public static final ArgumentTypeStrategy MAP_KEY_ARG = new MapKeyArgumentTypeStrategy();
+
     /**
      * Input strategy for {@link BuiltInFunctionDefinitions#JSON_OBJECT}.
      *

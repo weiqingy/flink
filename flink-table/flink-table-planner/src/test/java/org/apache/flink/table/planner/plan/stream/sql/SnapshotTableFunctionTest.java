@@ -77,8 +77,7 @@ public class SnapshotTableFunctionTest extends TableTestBase {
                         .explainSql(
                                 "SELECT o.order_id, o.amount, r.rate "
                                         + "FROM Orders AS o, LATERAL SNAPSHOT("
-                                        + "input => TABLE Rates, "
-                                        + "load_completed_condition => 'user_time', "
+                                        + "input => TABLE Rates, on_time => DESCRIPTOR(rate_time), "
                                         + "load_completed_time => CAST(TIMESTAMP '2026-07-01 00:00:00' AS TIMESTAMP_LTZ(3))"
                                         + ") AS r "
                                         + "WHERE o.currency = r.currency");
@@ -94,8 +93,7 @@ public class SnapshotTableFunctionTest extends TableTestBase {
                         "CREATE VIEW OrdersWithRate AS "
                                 + "SELECT o.order_id, o.amount, r.rate "
                                 + "FROM Orders AS o, LATERAL SNAPSHOT("
-                                + "input => TABLE Rates, "
-                                + "load_completed_condition => 'user_time', "
+                                + "input => TABLE Rates, on_time => DESCRIPTOR(rate_time), "
                                 + "load_completed_time => CAST(TIMESTAMP '2026-07-01 00:00:00' AS TIMESTAMP_LTZ(3))"
                                 + ") AS r "
                                 + "WHERE o.currency = r.currency");
@@ -111,8 +109,7 @@ public class SnapshotTableFunctionTest extends TableTestBase {
                         .explainSql(
                                 "SELECT o.order_id, o.amount, r.rate "
                                         + "FROM Orders AS o, LATERAL SNAPSHOT("
-                                        + "input => TABLE RatesView, "
-                                        + "load_completed_condition => 'user_time', "
+                                        + "input => TABLE RatesView, on_time => DESCRIPTOR(rate_time), "
                                         + "load_completed_time => CAST(TIMESTAMP '2026-07-01 00:00:00' AS TIMESTAMP_LTZ(3))"
                                         + ") AS r "
                                         + "WHERE o.currency = r.currency");
@@ -121,20 +118,21 @@ public class SnapshotTableFunctionTest extends TableTestBase {
 
     @Test
     void testSystemArgumentsNotAllowed() {
-        // SNAPSHOT disables the implicit system arguments (e.g. `on_time`). Passing one in a
-        // LATERAL context must be rejected because the argument is not part of the function
-        // signature.
+        // SNAPSHOT disables the implicit system arguments. It declares its own `on_time` argument
+        // (so that name is accepted), but the other system arguments such as `uid` remain
+        // unsupported and must be rejected.
         assertThatThrownBy(
                         () ->
                                 util.verifyRelPlan(
                                         "SELECT o.order_id "
                                                 + "FROM Orders AS o, LATERAL SNAPSHOT("
                                                 + "input => TABLE Rates, "
-                                                + "on_time => DESCRIPTOR(rate_time)) AS r "
+                                                + "on_time => DESCRIPTOR(rate_time), "
+                                                + "uid => 'my_uid') AS r "
                                                 + "WHERE o.currency = r.currency"))
                 .satisfies(
                         anyCauseMatches(
-                                "The 'on_time' argument is not supported because function "
+                                "The 'uid' argument is not supported because function "
                                         + "'SNAPSHOT' does not use system arguments."));
     }
 

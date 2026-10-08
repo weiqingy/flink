@@ -25,7 +25,6 @@ import org.apache.flink.table.types.logical.CharType;
 import org.apache.flink.table.types.logical.SymbolType;
 import org.apache.flink.table.types.utils.ValueDataTypeConverter;
 import org.apache.flink.types.bitmap.Bitmap;
-import org.apache.flink.types.bitmap.RoaringBitmapData;
 import org.apache.flink.types.variant.Variant;
 
 import org.junit.jupiter.params.ParameterizedTest;
@@ -43,6 +42,7 @@ import java.time.Period;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.UUID;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,10 +121,9 @@ class ValueDataTypeConverterTest {
                 of(TimePointUnit.HOUR, new AtomicDataType(new SymbolType<>(), TimePointUnit.class)),
                 of(new BigDecimal[0], null),
                 of(Variant.newBuilder().of("hello"), DataTypes.VARIANT()),
-                of(Bitmap.empty(), DataTypes.BITMAP().bridgedTo(RoaringBitmapData.class)),
-                of(
-                        Bitmap.fromArray(new int[] {1, 2}),
-                        DataTypes.BITMAP().bridgedTo(RoaringBitmapData.class)));
+                of(Bitmap.empty(), DataTypes.BITMAP()),
+                of(Bitmap.fromArray(new int[] {1, 2}), DataTypes.BITMAP()),
+                of(UUID.fromString("550e8400-e29b-41d4-a716-446655440000"), DataTypes.UUID()));
     }
 
     @ParameterizedTest(name = "[{index}] value: {0} type: {1}")

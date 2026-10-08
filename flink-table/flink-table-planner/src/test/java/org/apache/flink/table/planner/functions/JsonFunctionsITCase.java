@@ -254,8 +254,11 @@ class JsonFunctionsITCase extends BuiltInFunctionTestBase {
                         INT().nullable())
 
                 // WILDCARDS matching MULTIPLE nodes -> NULL
-                // PARSE_JSON has no Table API equivalent, so this stays SQL-only
-                .testSqlResult("JSON_LENGTH(PARSE_JSON(f0), '$.*')", null, INT().nullable())
+                .testResult(
+                        $("f0").parseJson().jsonLength("$.*"),
+                        "JSON_LENGTH(PARSE_JSON(f0), '$.*')",
+                        null,
+                        INT().nullable())
                 .testResult(
                         $("f0").jsonLength("$.*"), "JSON_LENGTH(f0, '$.*')", null, INT().nullable())
                 .testResult(
@@ -302,12 +305,26 @@ class JsonFunctionsITCase extends BuiltInFunctionTestBase {
                         1,
                         INT().nullable())
                 // JSON_LENGTH variant support (runtime path, no constant folding)
-                // PARSE_JSON has no Table API equivalent, so these stay SQL-only
-                .testSqlResult("JSON_LENGTH(PARSE_JSON(f0))", 3, INT().nullable())
-                .testSqlResult("JSON_LENGTH(PARSE_JSON('[1,2,3,4,5]'))", 5, INT().nullable())
-                .testSqlResult("JSON_LENGTH(PARSE_JSON('\"hello\"'))", 1, INT().nullable())
-                .testSqlResult(
-                        "JSON_LENGTH(PARSE_JSON(f0), '$.metadata.tags')", 3, INT().nullable())
+                .testResult(
+                        $("f0").parseJson().jsonLength(),
+                        "JSON_LENGTH(PARSE_JSON(f0))",
+                        3,
+                        INT().nullable())
+                .testResult(
+                        lit("[1,2,3,4,5]").parseJson().jsonLength(),
+                        "JSON_LENGTH(PARSE_JSON('[1,2,3,4,5]'))",
+                        5,
+                        INT().nullable())
+                .testResult(
+                        lit("\"hello\"").parseJson().jsonLength(),
+                        "JSON_LENGTH(PARSE_JSON('\"hello\"'))",
+                        1,
+                        INT().nullable())
+                .testResult(
+                        $("f0").parseJson().jsonLength("$.metadata.tags"),
+                        "JSON_LENGTH(PARSE_JSON(f0), '$.metadata.tags')",
+                        3,
+                        INT().nullable())
                 .testResult(
                         $("f0").jsonLength("$.items[*]"),
                         "JSON_LENGTH(f0, '$.items[*]')",
@@ -994,7 +1011,7 @@ class JsonFunctionsITCase extends BuiltInFunctionTestBase {
                                 "{\"f0\":[{\"f0\":1,\"f1\":2}]}",
                                 STRING().notNull())
                         .testResult(
-                                jsonString(call("PARSE_JSON", $("f14"))),
+                                jsonString($("f14").parseJson()),
                                 "JSON_STRING(PARSE_JSON('{\"key\":\"value\"}'))",
                                 "{\"key\":\"value\"}",
                                 STRING().notNull()),
@@ -1019,39 +1036,147 @@ class JsonFunctionsITCase extends BuiltInFunctionTestBase {
         // The bulk of parsing behavior is covered by BinaryVariantInternalBuilderTest.
         return List.of(
                 TestSetSpec.forFunction(BuiltInFunctionDefinitions.PARSE_JSON)
-                        .onFieldsWithData("{\"a\":1,\"b\":[2,3]}", "1e400")
-                        .andDataTypes(STRING().notNull(), STRING().notNull())
+                        .onFieldsWithData(
+                                "{\"a\":1,\"b\":[2,3]}", "1e400", "{\"a\":1,\"a\":2}", null)
+                        .andDataTypes(
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                BOOLEAN())
                         .testResult(
-                                jsonString(call("PARSE_JSON", $("f0"))),
+                                jsonString($("f0").parseJson()),
                                 "JSON_STRING(PARSE_JSON(f0))",
                                 "{\"a\":1,\"b\":[2,3]}",
                                 STRING().notNull())
                         .testResult(
-                                jsonString(call("PARSE_JSON", nullOf(STRING()))),
+                                jsonString(nullOf(STRING()).parseJson()),
                                 "JSON_STRING(PARSE_JSON(CAST(NULL AS STRING)))",
                                 null,
                                 STRING().nullable())
                         .testSqlRuntimeError(
                                 "PARSE_JSON(f1)",
                                 TableRuntimeException.class,
-                                "Failed to parse json string")
+                                "Failed to parse JSON string")
                         .testTableApiRuntimeError(
-                                call("PARSE_JSON", $("f1")),
+                                $("f1").parseJson(),
                                 TableRuntimeException.class,
-                                "Failed to parse json string"),
-                TestSetSpec.forFunction(BuiltInFunctionDefinitions.TRY_PARSE_JSON)
-                        .onFieldsWithData("{\"a\":1}", "1e400")
-                        .andDataTypes(STRING().notNull(), STRING().notNull())
+                                "Failed to parse JSON string")
+                        // allowDuplicateKeys: false (the default) rejects duplicate keys
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f2, false)",
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string")
+                        .testTableApiRuntimeError(
+                                $("f2").parseJson(false),
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string")
+                        // allowDuplicateKeys: true keeps the last occurrence of the duplicated key
                         .testResult(
-                                jsonString(call("TRY_PARSE_JSON", $("f0"))),
+                                jsonString($("f2").parseJson(true)),
+                                "JSON_STRING(PARSE_JSON(f2, true))",
+                                "{\"a\":2}",
+                                STRING().notNull())
+                        // a NULL allowDuplicateKeys is treated as false
+                        .testResult(
+                                jsonString(call("PARSE_JSON", $("f0"), $("f3"))),
+                                "JSON_STRING(PARSE_JSON(f0, f3))",
+                                "{\"a\":1,\"b\":[2,3]}",
+                                STRING().notNull())
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f2, f3)",
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string")
+                        .testTableApiRuntimeError(
+                                call("PARSE_JSON", $("f2"), $("f3")),
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string"),
+                TestSetSpec.forFunction(BuiltInFunctionDefinitions.TRY_PARSE_JSON)
+                        .onFieldsWithData("{\"a\":1}", "1e400", "{\"a\":1,\"a\":2}", null)
+                        .andDataTypes(
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                BOOLEAN())
+                        .testResult(
+                                jsonString($("f0").tryParseJson()),
                                 "JSON_STRING(TRY_PARSE_JSON(f0))",
                                 "{\"a\":1}",
                                 STRING())
                         .testResult(
-                                jsonString(call("TRY_PARSE_JSON", $("f1"))),
+                                jsonString($("f1").tryParseJson()),
                                 "JSON_STRING(TRY_PARSE_JSON(f1))",
                                 null,
+                                STRING())
+                        // allowDuplicateKeys: false (the default) yields NULL on duplicate keys
+                        .testResult(
+                                jsonString($("f2").tryParseJson(false)),
+                                "JSON_STRING(TRY_PARSE_JSON(f2, false))",
+                                null,
+                                STRING())
+                        // allowDuplicateKeys: true keeps the last occurrence of the duplicated key
+                        .testResult(
+                                jsonString($("f2").tryParseJson(true)),
+                                "JSON_STRING(TRY_PARSE_JSON(f2, true))",
+                                "{\"a\":2}",
+                                STRING())
+                        // a NULL allowDuplicateKeys is treated as false
+                        .testResult(
+                                jsonString(call("TRY_PARSE_JSON", $("f0"), $("f3"))),
+                                "JSON_STRING(TRY_PARSE_JSON(f0, f3))",
+                                "{\"a\":1}",
+                                STRING())
+                        .testResult(
+                                jsonString(call("TRY_PARSE_JSON", $("f2"), $("f3"))),
+                                "JSON_STRING(TRY_PARSE_JSON(f2, f3))",
+                                null,
                                 STRING()),
+                // Input is parsed from its UTF-8 bytes. A NUL or a BOM must not be read as a
+                // UTF-16 or UTF-32 hint that turns invalid JSON into a value. Only input that is
+                // not valid UTF-8 reports the index of the invalid byte.
+                // FROM_BASE64 wraps the decoded bytes without validating them, so 'Iv8i' yields
+                // the invalid UTF-8 bytes 22 FF 22.
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.PARSE_JSON,
+                                "input bytes are always read as UTF-8")
+                        .onFieldsWithData("1\u0000", "\u00001", "\uFEFF1", "[\u65E5]", "Iv8i")
+                        .andDataTypes(
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull())
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f0)",
+                                "Unexpected character ((CTRL-CHAR, code 0)): Expected space separating root-level values")
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f1)",
+                                "Illegal character ((CTRL-CHAR, code 0)): only regular white space")
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f2)",
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string: \uFEFF1")
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(f3)",
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string: [\u65E5]")
+                        .testSqlRuntimeError(
+                                "PARSE_JSON(FROM_BASE64(f4))",
+                                TableRuntimeException.class,
+                                "Failed to parse JSON string: Invalid UTF-8 byte at index 1 of 3."),
+                TestSetSpec.forFunction(
+                                BuiltInFunctionDefinitions.TRY_PARSE_JSON,
+                                "input bytes are always read as UTF-8")
+                        .onFieldsWithData("1\u0000", "\u00001", "\uFEFF1", "Iv8i")
+                        .andDataTypes(
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull(),
+                                STRING().notNull())
+                        .testSqlResult("JSON_STRING(TRY_PARSE_JSON(f0))", null, STRING())
+                        .testSqlResult("JSON_STRING(TRY_PARSE_JSON(f1))", null, STRING())
+                        .testSqlResult("JSON_STRING(TRY_PARSE_JSON(f2))", null, STRING())
+                        .testSqlResult(
+                                "JSON_STRING(TRY_PARSE_JSON(FROM_BASE64(f3)))", null, STRING()),
                 TestSetSpec.forFunction(
                                 BuiltInFunctionDefinitions.PARSE_JSON,
                                 "VARIANT expression preceding another expression in a"
@@ -1061,13 +1186,13 @@ class JsonFunctionsITCase extends BuiltInFunctionTestBase {
                         .withConstantFoldingEnabled()
                         .testResult(
                                 resultSpec(
-                                        call("PARSE_JSON", $("f0")),
+                                        $("f0").parseJson(),
                                         "PARSE_JSON(f0)",
                                         getVariantForJson("{\"a\": 1}"),
                                         VARIANT().notNull(),
                                         VARIANT().notNull()),
                                 resultSpec(
-                                        jsonString(call("PARSE_JSON", $("f0"))),
+                                        jsonString($("f0").parseJson()),
                                         "JSON_STRING(PARSE_JSON(f0))",
                                         "{\"a\":1}",
                                         STRING().notNull(),

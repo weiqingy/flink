@@ -25,16 +25,24 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Variant represent a semi-structured data.
  *
  * <p>Instances are serializable so that they can be held as member variables of user-defined
  * functions or passed into their constructors.
+ *
+ * <p>{@link #toJson()} returns valid JSON or fails. {@link #toString()} is for debugging and can be
+ * lossy.
  */
 @PublicEvolving
 public interface Variant extends Serializable {
+
+    /** Pinned so interface changes don't alter the UID and break restore of VARIANT state. */
+    long serialVersionUID = 1L;
 
     /** Returns true if the variant is a primitive typed value, such as INT, DOUBLE, STRING, etc. */
     boolean isPrimitive();
@@ -135,21 +143,32 @@ public interface Variant extends Serializable {
 
     /**
      * Get the scalar value of variant as {@link LocalDateTime}, if the variant type is {@link
-     * Type#TIMESTAMP}. The returned value has microsecond precision.
+     * Type#TIMESTAMP} or {@link Type#TIMESTAMP_NS}. The returned value has microsecond or
+     * nanosecond precision, matching the variant's actual type.
      *
      * @throws VariantTypeException If this variant is not a scalar value or is not {@link
-     *     Type#TIMESTAMP}.
+     *     Type#TIMESTAMP} or {@link Type#TIMESTAMP_NS}.
      */
     LocalDateTime getDateTime() throws VariantTypeException;
 
     /**
      * Get the scalar value of variant as {@link Instant}, if the variant type is {@link
-     * Type#TIMESTAMP_LTZ}. The returned value has microsecond precision.
+     * Type#TIMESTAMP_LTZ} or {@link Type#TIMESTAMP_LTZ_NS}. The returned value has microsecond or
+     * nanosecond precision, matching the variant's actual type.
      *
      * @throws VariantTypeException If this variant is not a scalar value or is not {@link
-     *     Type#TIMESTAMP_LTZ}.
+     *     Type#TIMESTAMP_LTZ} or {@link Type#TIMESTAMP_LTZ_NS}.
      */
     Instant getInstant() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as {@link LocalTime}, if the variant type is {@link
+     * Type#TIME}. The returned value has microsecond precision.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#TIME}.
+     */
+    LocalTime getTime() throws VariantTypeException;
 
     /**
      * Get the scalar value of variant as byte array, if the variant type is {@link Type#BYTES}.
@@ -158,6 +177,14 @@ public interface Variant extends Serializable {
      *     Type#BYTES}.
      */
     byte[] getBytes() throws VariantTypeException;
+
+    /**
+     * Get the scalar value of variant as UUID, if the variant type is {@link Type#UUID}.
+     *
+     * @throws VariantTypeException If this variant is not a scalar value or is not {@link
+     *     Type#UUID}.
+     */
+    UUID getUuid() throws VariantTypeException;
 
     /**
      * Get the scalar value of variant.
@@ -213,8 +240,31 @@ public interface Variant extends Serializable {
      */
     List<String> getFieldNames() throws VariantTypeException;
 
-    /** Parses the variant to json. */
+    /**
+     * Returns the variant as valid JSON.
+     *
+     * <p>It fails for a value that JSON cannot represent, such as a NaN or infinite {@code FLOAT}
+     * or {@code DOUBLE}, and for a node it cannot decode, such as a type written by a newer
+     * version. For example, an array holding 1 and NaN fails. Use {@link #toString()} to inspect
+     * such a variant.
+     *
+     * @throws VariantTypeException if the variant contains a value that cannot be represented as
+     *     valid JSON (e.g. NaN for double types)
+     */
     String toJson();
+
+    /**
+     * Returns the variant as JSON for debugging. Unlike {@link #toJson()} it never fails, so the
+     * result can be lossy:
+     *
+     * <ul>
+     *   <li>NaN and infinity become strings. An array holding 1 and NaN returns {@code [1,"NaN"]}.
+     *   <li>A node whose type this version does not know becomes {@code "<UNKNOWN>"}.
+     *   <li>Any other node that cannot be decoded becomes {@code "<INVALID>"}.
+     * </ul>
+     */
+    @Override
+    String toString();
 
     /** The type of variant. */
     @PublicEvolving
@@ -232,9 +282,13 @@ public interface Variant extends Serializable {
         DECIMAL,
         STRING,
         DATE,
+        TIME,
         TIMESTAMP,
         TIMESTAMP_LTZ,
-        BYTES
+        TIMESTAMP_NS,
+        TIMESTAMP_LTZ_NS,
+        BYTES,
+        UUID
     }
 
     static VariantBuilder newBuilder() {

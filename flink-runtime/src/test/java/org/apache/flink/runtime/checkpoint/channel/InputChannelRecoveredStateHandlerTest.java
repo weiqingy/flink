@@ -144,11 +144,11 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
 
     /** Builds a handler in filtering mode (non-null filtering handler, no-op stub). */
     private SpillingWithFilteringHandler buildFilteringInputChannelStateHandler() {
-        // Empty GateFilterHandler array: filtering is "enabled" structurally, but no gate-level
-        // filter logic runs. Suitable for exercising getBuffer() routing only.
+        // A single null gate handler: getBuffer routing is unaffected, and recover() hits the
+        // dispatcher's reachable null-handler throw path.
         ChannelStateFilteringHandler stubFilteringHandler =
                 new ChannelStateFilteringHandler(
-                        new ChannelStateFilteringHandler.GateFilterHandler[0]);
+                        new ChannelStateFilteringHandler.GateFilterHandler<?>[] {null});
         return (SpillingWithFilteringHandler)
                 AbstractInputChannelRecoveredStateHandler.create(
                         new InputGate[] {inputGate},
@@ -352,6 +352,26 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
     }
 
     @Test
+    void testPreFilterBufferRecycledWhenFilterAndRewriteThrows() throws Exception {
+        // On the dispatcher's null-handler throw, the pre-filter buffer must still be recycled, or
+        // close() would free() a segment still wrapped by a live NetworkBuffer.
+        try (SpillingWithFilteringHandler filteringHandler =
+                buildFilteringInputChannelStateHandler()) {
+            RecoveredChannelStateHandler.BufferWithContext<Buffer> bwc =
+                    filteringHandler.getBuffer(channelInfo);
+            // Non-empty buffer so recover() reaches filterAndRewrite.
+            bwc.context.setSize(Long.BYTES);
+            assertThat(filteringHandler.isPreFilterBufferInUse()).isTrue();
+
+            assertThatThrownBy(() -> filteringHandler.recover(channelInfo, 0, bwc))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("No handler for gateIndex");
+
+            assertThat(filteringHandler.isPreFilterBufferInUse()).isFalse();
+        }
+    }
+
+    @Test
     void testSpillingHandlerRequiresSpillDirectories() {
         assertThatThrownBy(() -> buildSpillingNoFilteringHandler(null))
                 .isInstanceOf(NullPointerException.class);
@@ -508,7 +528,8 @@ class InputChannelRecoveredStateHandlerTest extends RecoveredChannelStateHandler
             channels.put(new SubtaskConnectionDescriptor(1, channelInfo.getInputChannelIdx()), vc);
 
             ChannelStateFilteringHandler.GateFilterHandler<Long> gateHandler =
-                    new ChannelStateFilteringHandler.GateFilterHandler<>(channels, serializer);
+                    new ChannelStateFilteringHandler.GateFilterHandler<>(
+                            channels, serializer, RescaleMappings.SYMMETRIC_IDENTITY);
             return new ChannelStateFilteringHandler(
                     new ChannelStateFilteringHandler.GateFilterHandler<?>[] {gateHandler});
         }
